@@ -1,0 +1,6 @@
+{
+  "name": "NEXLOCK — Android App Security Suite",
+  "description": "Your Apps. Your Privacy. Your Control. Phase 1 UI foundation, navigation, design system, Room/DataStore architecture, and interactive screen suite for NEXLOCK Android App Lock.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

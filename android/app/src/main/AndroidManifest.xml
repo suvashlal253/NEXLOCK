@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Biometric Hardware (Phase 2 Active) -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <!--
+      Android 11+ (API 30+) Package Visibility & Google Play Policy Justification:
+      1. The <queries> block below declares explicit visibility for all launchable applications
+         (ACTION_MAIN + CATEGORY_LAUNCHER), which is sufficient on Android 11+ to discover
+         standard user-installed and launchable system applications without broad permissions.
+      2. QUERY_ALL_PACKAGES is declared only as a documented fallback for dedicated device security
+         / app-lock utilities that must also inspect non-launcher security-sensitive packages.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- Foreground App Usage Detection (Phase 4 implementation - requires explicit user grant in Settings) -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Lock Screen Overlay Window (Phase 4 implementation - requires explicit user grant in Settings) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Foreground Monitoring Service (Phase 4 implementation) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:label="NEXLOCK"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
