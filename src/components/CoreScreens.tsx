@@ -44,6 +44,13 @@ import {
   runPhase3UnitTests,
 } from '../discovery/appDiscoveryEngine';
 import {
+  EXCLUDED_SYSTEM_PACKAGES,
+  isPackageExcludedFromLocking,
+  Phase4UnitTestResult,
+  RELOCK_DURATION_OPTIONS,
+  runPhase4UnitTests,
+} from '../monitoring/appLockEngine';
+import {
   runPhase2UnitTests,
   UnitTestResultItem,
   validatePinStrength,
@@ -60,11 +67,11 @@ interface CoreScreensProps {
 function formatProtectionStatusLabel(status: string): string {
   switch (status) {
     case 'PROTECTION_CONFIGURED':
-      return 'Protection Configured (Awaiting Phase 4 Engine)';
+      return 'Protection Configured (Start Monitoring / Grant Permissions)';
     case 'SELECTED_FOR_PROTECTION':
       return 'Selected for Protection (Set Master PIN to Finish)';
     case 'PROTECTION_ENGINE_ACTIVE':
-      return 'Protection Engine Active';
+      return 'Protection Engine Active (Intercepting Foreground Launches)';
     case 'PROTECTION_TEMPORARILY_UNAVAILABLE':
       return 'Protection Temporarily Unavailable';
     default:
@@ -125,6 +132,24 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
     triggerBiometricAuthentication,
     lockSessionNow,
     toggleSimulateKeyInvalidation,
+    monitoringServiceState,
+    engineOperationalEvaluation,
+    permissionHealth,
+    reLockDurationOption,
+    setReLockDurationOption,
+    lockOnScreenOff,
+    setLockOnScreenOff,
+    isScreenInteractive,
+    currentForegroundPackage,
+    activeChallengePackage,
+    unlockedPackageSessions,
+    startMonitoringEngine,
+    pauseMonitoringEngine,
+    simulateForegroundLaunch,
+    grantPackageChallengeUnlock,
+    dismissChallengeToHomeLauncher,
+    simulateScreenOff,
+    simulateScreenOn,
   } = store;
 
   const [authPinEntry, setAuthPinEntry] = useState<string>('');
@@ -142,12 +167,16 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
     text: string;
   } | null>(null);
 
-  // Interactive Test Suite Runners (Phase 2: 12 tests + Phase 3: 17 tests)
+  // Interactive Test Suite Runners (Phase 4: 12 tests + Phase 3: 17 tests + Phase 2: 12 tests = 41 tests)
+  const [testResultsP4, setTestResultsP4] = useState<Phase4UnitTestResult[] | null>(null);
   const [testResultsP2, setTestResultsP2] = useState<UnitTestResultItem[] | null>(null);
   const [testResultsP3, setTestResultsP3] = useState<Phase3UnitTestResult[] | null>(null);
   const [isRunningTests, setIsRunningTests] = useState<boolean>(false);
 
   const lockedCount = useMemo(() => apps.filter((a) => a.isLocked).length, [apps]);
+  const operationalProtectedAppsCount = engineOperationalEvaluation.isOperational
+    ? lockedCount
+    : 0;
   const currentReLockOption =
     RELOCK_POLICIES.find((p) => p.id === preferences.globalReLockPolicy) || RELOCK_POLICIES[0];
   const currentSessionTimeoutOption =
@@ -160,116 +189,153 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
     return ['7', '2', '9', '4', '0', '1', '8', '5', '3', '6'];
   }, [preferences.randomizeKeypad]);
 
-  // 7. HOME DASHBOARD
+  // 7. HOME DASHBOARD (Phase 4 Real App Lock Engine & Protection Status)
   if (currentScreen === 'home') {
+    const isEngineActive = engineOperationalEvaluation.isOperational;
+    const currentReLockConfig =
+      RELOCK_DURATION_OPTIONS.find((r) => r.id === reLockDurationOption) ||
+      RELOCK_DURATION_OPTIONS[0];
+
     return (
       <div className="space-y-6">
-        <div className="rounded-3xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 p-6 sm:p-8">
+        <div className="rounded-3xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 p-6 sm:p-8 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-[#A6B0C3]">
-            <span>Screen 07 of 15 · Home Dashboard</span>
+            <span>Screen 07 of 15 · Home Dashboard & Phase 4 App Lock Engine</span>
             <span>
-              Phase 3 App Discovery & Room v2 Active ·{' '}
-              {isSessionAuthenticated
-                ? `Session Unlocked (${
-                    currentSessionTimeoutOption.durationMs === 0
-                      ? 'Immediate Policy'
-                      : `${sessionRemainingSeconds}s remaining`
-                  })`
-                : 'Session Locked'}
+              Engine Status:{' '}
+              <span
+                className={
+                  isEngineActive
+                    ? 'text-[#2DD4A3] font-bold'
+                    : 'text-amber-500 font-bold'
+                }
+              >
+                {engineOperationalEvaluation.badgeLabel}
+              </span>
             </span>
           </div>
 
-          <div className="mt-5 grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
+          {discoveryNotice && (
+            <div className="p-3.5 rounded-2xl bg-[#5B8CFF]/10 border border-[#5B8CFF]/30 flex items-center justify-between gap-3 text-xs text-slate-800 dark:text-[#F5F7FF]">
+              <span>{discoveryNotice}</span>
+              <button
+                type="button"
+                onClick={() => setDiscoveryNotice(null)}
+                aria-label="Dismiss engine notice"
+                className="p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
             <div className="md:col-span-7 space-y-2">
               <p className="text-xs font-semibold text-[#5B8CFF]">
-                NEXLOCK Installed Apps & Security Command Center
+                NEXLOCK Foreground App Lock Engine · UsageStatsManager + AppLockActivity
               </p>
               <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-[#F5F7FF] text-balance">
-                {lockedCount} Locked of {apps.length} Discovered Applications
+                {operationalProtectedAppsCount} Operational of {lockedCount} Selected Protected Apps
               </h1>
               <p className="text-sm text-slate-600 dark:text-[#A6B0C3] leading-relaxed">
-                Applications are discovered via Android `PackageManager` across 10 automatic
-                metadata categories with Drawable `LruCache` icons and unique-indexed Room
-                `locked_apps` persistence.
+                {isEngineActive
+                  ? `AppLockMonitoringService is actively polling UsageEvents.ACTIVITY_RESUMED. Re-Lock Policy: ${currentReLockConfig.label}. Screen Status: ${
+                      isScreenInteractive ? 'Interactive (On)' : 'Non-Interactive (Off)'
+                    }.`
+                  : 'Protection is currently Paused. Operational Protected Apps is strictly 0 until Usage Access, Overlay Permission, Master PIN, and AppLockMonitoringService are all active.'}
               </p>
-              <div className="pt-3 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setCurrentScreen('apps')}
-                  className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#5B8CFF] hover:bg-[#4A7BF7] text-white font-semibold text-xs sm:text-sm transition-colors whitespace-nowrap"
-                >
-                  Open Installed Apps Manager
-                </button>
-
-                {!preferences.pinConfigured ? (
+              <div className="pt-3 flex flex-wrap items-center gap-2.5">
+                {monitoringServiceState === 'RUNNING' && isEngineActive ? (
                   <button
                     type="button"
-                    onClick={() => setCurrentScreen('create_pin')}
-                    className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#0B1020] dark:hover:bg-white/10 text-slate-800 dark:text-[#F5F7FF] font-medium text-xs sm:text-sm transition-colors whitespace-nowrap"
+                    onClick={pauseMonitoringEngine}
+                    className="min-h-[44px] px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-semibold text-xs sm:text-sm transition-colors whitespace-nowrap"
                   >
-                    Create Master PIN
-                  </button>
-                ) : isSessionAuthenticated ? (
-                  <button
-                    type="button"
-                    onClick={lockSessionNow}
-                    className="min-h-[44px] px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-semibold text-xs sm:text-sm flex items-center gap-2 transition-colors whitespace-nowrap"
-                  >
-                    <Lock className="w-4 h-4" />
-                    <span>Lock Session Now</span>
+                    Pause Protection Service
                   </button>
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setCurrentScreen('auth_screen')}
-                    className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#0B1020] dark:hover:bg-white/10 text-slate-800 dark:text-[#F5F7FF] font-medium text-xs sm:text-sm flex items-center gap-2 transition-colors whitespace-nowrap"
+                    onClick={startMonitoringEngine}
+                    className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#2DD4A3] hover:bg-[#25be90] text-[#0B1020] font-bold text-xs sm:text-sm transition-colors whitespace-nowrap"
                   >
-                    <KeyRound className="w-4 h-4" />
-                    <span>Authenticate Session</span>
+                    Start Protection Service
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentScreen('permission_setup')}
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#0B1020] dark:hover:bg-white/10 text-slate-800 dark:text-[#F5F7FF] font-semibold text-xs sm:text-sm transition-colors whitespace-nowrap"
+                >
+                  Permission Health ({permissionHealth.usageAccessGranted && permissionHealth.overlayPermissionGranted ? 'All Granted' : 'Action Needed'})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentScreen('apps')}
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#5B8CFF] hover:bg-[#4A7BF7] text-white font-semibold text-xs sm:text-sm transition-colors whitespace-nowrap"
+                >
+                  Manage Apps ({apps.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={isScreenInteractive ? simulateScreenOff : simulateScreenOn}
+                  className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#0B1020] dark:hover:bg-white/10 text-slate-700 dark:text-[#A6B0C3] font-medium text-xs transition-colors whitespace-nowrap"
+                >
+                  {isScreenInteractive ? 'Simulate Screen Off' : 'Simulate Screen On'}
+                </button>
               </div>
             </div>
 
+            {/* Required Phase 4 Dashboard Status Metrics (Section 10) */}
             <div className="md:col-span-5 grid grid-cols-2 gap-3">
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200/80 dark:border-white/10">
-                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Installed Apps</p>
+                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Total Installed Apps</p>
                 <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-[#F5F7FF]">
                   {apps.length}
                 </p>
-                <p className="mt-1 text-[11px] text-[#5B8CFF]">PackageManager Active</p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200/80 dark:border-white/10">
-                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Locked Apps</p>
-                <p className="mt-1 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-[#F5F7FF]">
-                  {lockedCount}
-                </p>
-                <p className="mt-1 text-[11px] text-[#2DD4A3]">Room Unique Index</p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200/80 dark:border-white/10">
-                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Master Session</p>
-                <p className="mt-1 text-base font-bold text-slate-900 dark:text-[#F5F7FF] truncate">
-                  {isSessionAuthenticated
-                    ? 'Unlocked'
-                    : preferences.pinConfigured
-                    ? 'Locked'
-                    : 'Unconfigured'}
-                </p>
-                <p className="mt-1 text-[11px] text-slate-500 dark:text-[#A6B0C3] font-mono tabular-nums">
-                  {isSessionAuthenticated && lastAuthMethod
-                    ? `${sessionRemainingSeconds}s (${currentSessionTimeoutOption.shortLabel})`
-                    : 'PBKDF2 210k iter'}
+                <p className="mt-1 text-[11px] text-[#5B8CFF]">
+                  Selected for Lock: {lockedCount}
                 </p>
               </div>
 
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200/80 dark:border-white/10">
-                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Icon LruCache</p>
-                <p className="mt-1 text-base font-bold text-slate-900 dark:text-[#F5F7FF]">
-                  {apps.filter((a) => a.hasValidIconResource).length}/{apps.length}
+                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Protection Operational</p>
+                <p
+                  className={`mt-1 text-2xl font-bold font-mono tabular-nums ${
+                    operationalProtectedAppsCount > 0
+                      ? 'text-[#2DD4A3]'
+                      : 'text-amber-500'
+                  }`}
+                >
+                  {operationalProtectedAppsCount}
                 </p>
-                <p className="mt-1 text-[11px] text-[#2DD4A3]">Aspect-Preserved</p>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-[#A6B0C3]">
+                  {isEngineActive ? 'Engine Enforcing' : 'Engine Paused (0 Active)'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200/80 dark:border-white/10">
+                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Usage & Overlay</p>
+                <p className="mt-1 text-sm font-bold text-slate-900 dark:text-[#F5F7FF]">
+                  {permissionHealth.usageAccessGranted ? 'Granted' : 'Not Granted'} /{' '}
+                  {permissionHealth.overlayPermissionGranted ? 'Granted' : 'Not Granted'}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-[#A6B0C3]">
+                  Service: {monitoringServiceState === 'RUNNING' ? 'Running' : 'Stopped'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200/80 dark:border-white/10">
+                <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">Foreground Detector</p>
+                <p className="mt-1 text-xs font-bold font-mono text-slate-900 dark:text-[#F5F7FF] truncate">
+                  {currentForegroundPackage || 'com.google.android.apps.nexuslauncher'}
+                </p>
+                <p className="mt-1 text-[11px] text-[#2DD4A3]">
+                  Re-Lock: {currentReLockConfig.shortLabel}
+                </p>
               </div>
             </div>
           </div>
@@ -328,41 +394,53 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
                       </div>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => toggleAppLock(app.packageName)}
-                      aria-label={`Toggle lock policy for ${app.appName}`}
-                      className={`min-h-[44px] px-3.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap ${
-                        app.isLocked
-                          ? 'bg-[#2DD4A3]/15 text-[#2DD4A3]'
-                          : 'bg-slate-100 dark:bg-[#0B1020] text-slate-600 dark:text-[#A6B0C3]'
-                      }`}
-                    >
-                      {app.isLocked ? (
-                        <>
-                          <Lock className="w-3.5 h-3.5" />
-                          <span>Locked</span>
-                        </>
-                      ) : (
-                        <>
-                          <Unlock className="w-3.5 h-3.5" />
-                          <span>Unlocked</span>
-                        </>
-                      )}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => simulateForegroundLaunch(app.packageName)}
+                        className="min-h-[44px] px-3 rounded-xl bg-[#5B8CFF]/15 hover:bg-[#5B8CFF]/25 text-[#5B8CFF] text-xs font-semibold flex items-center gap-1 whitespace-nowrap"
+                        title={`Simulate Android foreground launch of ${app.appName}`}
+                      >
+                        <Play className="w-3 h-3" />
+                        <span>Launch App</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => toggleAppLock(app.packageName)}
+                        aria-label={`Toggle lock policy for ${app.appName}`}
+                        className={`min-h-[44px] px-3.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                          app.isLocked
+                            ? 'bg-[#2DD4A3]/15 text-[#2DD4A3]'
+                            : 'bg-slate-100 dark:bg-[#0B1020] text-slate-600 dark:text-[#A6B0C3]'
+                        }`}
+                      >
+                        {app.isLocked ? (
+                          <>
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Locked</span>
+                          </>
+                        ) : (
+                          <>
+                            <Unlock className="w-3.5 h-3.5" />
+                            <span>Unlocked</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
 
             <div className="mt-4 pt-4 border-t border-slate-200 dark:border-white/10 text-xs text-slate-500 dark:text-[#A6B0C3] flex items-center justify-between">
-              <span>Android 11+ &lt;queries&gt; visibility & Room MIGRATION_1_2 active</span>
+              <span>Click "Launch App" on any row to test real-time foreground interception</span>
               <button
                 type="button"
                 onClick={() => setCurrentScreen('about')}
                 className="text-[#5B8CFF] hover:underline font-medium"
               >
-                Run Phase 3 Tests (17)
+                Run All 41 Unit Tests
               </button>
             </div>
           </div>
@@ -781,7 +859,16 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
                     </button>
                   </div>
 
-                  <div className="flex items-center gap-2.5 self-end sm:self-center">
+                  <div className="flex items-center gap-2 self-end sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => simulateForegroundLaunch(app.packageName)}
+                      className="min-h-[44px] px-3 py-2 rounded-xl bg-[#5B8CFF]/15 hover:bg-[#5B8CFF]/25 text-[#5B8CFF] text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>Launch</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => openAppConfiguration(app.packageName)}
@@ -791,29 +878,35 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
                       <span>Details</span>
                     </button>
 
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={app.isLocked}
-                      onClick={() => toggleAppLock(app.packageName)}
-                      className={`min-h-[44px] min-w-[114px] px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
-                        app.isLocked
-                          ? 'bg-[#2DD4A3] text-[#0B1020]'
-                          : 'bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#A6B0C3]'
-                      }`}
-                    >
-                      {app.isLocked ? (
-                        <>
-                          <Lock className="w-3.5 h-3.5" />
-                          <span>Locked</span>
-                        </>
-                      ) : (
-                        <>
-                          <Unlock className="w-3.5 h-3.5" />
-                          <span>Unlocked</span>
-                        </>
-                      )}
-                    </button>
+                    {isPackageExcludedFromLocking(app.packageName) ? (
+                      <span className="min-h-[44px] min-w-[114px] px-3 py-2 rounded-xl bg-amber-500/15 text-amber-400 text-xs font-semibold flex items-center justify-center whitespace-nowrap">
+                        Recovery Safe
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={app.isLocked}
+                        onClick={() => toggleAppLock(app.packageName)}
+                        className={`min-h-[44px] min-w-[114px] px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                          app.isLocked
+                            ? 'bg-[#2DD4A3] text-[#0B1020]'
+                            : 'bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#A6B0C3]'
+                        }`}
+                      >
+                        {app.isLocked ? (
+                          <>
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Locked</span>
+                          </>
+                        ) : (
+                          <>
+                            <Unlock className="w-3.5 h-3.5" />
+                            <span>Unlocked</span>
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -927,20 +1020,21 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
             </div>
           </div>
 
-          {/* Action Buttons: Open Application, Refresh Application Information, Simulate Update */}
+          {/* Action Buttons: Launch in Foreground (Test Phase 4 Lock Engine), Refresh Application Information, Simulate Update */}
           <div className="flex flex-wrap items-center gap-2.5 pt-2">
             {selectedApp.isLaunchable && selectedApp.isInstalled && (
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  simulateForegroundLaunch(selectedApp.packageName);
                   setLaunchAppNotice(
-                    `PackageManager.getLaunchIntentForPackage("${selectedApp.packageName}") verified. On Android device, starts ${selectedApp.appName} activity.`
-                  )
-                }
+                    `Triggered UsageStatsManager foreground transition event for ${selectedApp.packageName}.`
+                  );
+                }}
                 className="min-h-[42px] px-4 py-2 rounded-xl bg-[#5B8CFF] hover:bg-[#4A7BF7] text-white text-xs font-semibold flex items-center gap-1.5"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open Application</span>
+                <span>Launch Application in Foreground (Test Lock Engine)</span>
               </button>
             )}
 
@@ -1074,10 +1168,13 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
     );
   }
 
-  // 10. AUTHENTICATION SCREEN
+  // 10. AUTHENTICATION SCREEN & PHASE 4 APPLOCKACTIVITY OVERLAY
   if (currentScreen === 'auth_screen') {
     const targetLen = preferences.pinLength;
     const isLockedOut = lockoutRemainingSeconds > 0;
+    const targetChallengeApp = activeChallengePackage
+      ? apps.find((a) => a.packageName === activeChallengePackage) || null
+      : null;
 
     const handleAuthDigit = async (d: string) => {
       if (isLockedOut || isCryptoBusy) return;
@@ -1089,6 +1186,9 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
           const res = await verifyMasterPin(next);
           setAuthStatus({ ok: res.ok, text: res.message });
           if (res.ok) {
+            if (targetChallengeApp) {
+              grantPackageChallengeUnlock(targetChallengeApp.packageName, 'MASTER_PIN');
+            }
             setTimeout(() => {
               setAuthPinEntry('');
               setCurrentScreen('home');
@@ -1103,31 +1203,69 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
     return (
       <div className="rounded-3xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 p-6 sm:p-10 flex flex-col justify-between min-h-[640px]">
         <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/10 pb-4">
-          <button
-            type="button"
-            onClick={() => setCurrentScreen('home')}
-            className="min-h-[44px] px-3 rounded-lg text-xs font-medium text-slate-600 dark:text-[#A6B0C3] hover:text-slate-900 dark:hover:text-white flex items-center gap-1.5"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Dashboard</span>
-          </button>
+          {targetChallengeApp ? (
+            <button
+              type="button"
+              onClick={dismissChallengeToHomeLauncher}
+              className="min-h-[44px] px-3 rounded-lg text-xs font-semibold text-rose-400 hover:text-rose-300 flex items-center gap-1.5"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Cancel & Exit to Android Home Launcher</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setCurrentScreen('home')}
+              className="min-h-[44px] px-3 rounded-lg text-xs font-medium text-slate-600 dark:text-[#A6B0C3] hover:text-slate-900 dark:hover:text-white flex items-center gap-1.5"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Dashboard</span>
+            </button>
+          )}
           <span className="text-xs text-slate-500 dark:text-[#A6B0C3]">
-            Screen 10 of 15 · Master Authentication Screen
+            {targetChallengeApp
+              ? `AppLockActivity · Intercepting ${targetChallengeApp.packageName}`
+              : 'Screen 10 of 15 · Master Authentication Screen'}
           </span>
         </div>
 
         <div className="max-w-md mx-auto w-full my-auto py-6 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#5B8CFF] to-[#9B7BFF] flex items-center justify-center font-bold text-base text-white mx-auto mb-3 shadow-md">
-            <Shield className="w-7 h-7" />
-          </div>
-          <p className="text-xs text-[#5B8CFF] font-semibold">
-            NEXLOCK Master Authentication Challenge
-          </p>
-          <h2 className="mt-1 text-xl sm:text-2xl font-bold text-slate-900 dark:text-[#F5F7FF]">
-            {preferences.pinConfigured
-              ? `Enter Your ${targetLen}-Digit Master PIN`
-              : 'No Master PIN Configured Yet'}
-          </h2>
+          {targetChallengeApp ? (
+            <div className="flex flex-col items-center mb-3">
+              <AppPackageIcon
+                packageName={targetChallengeApp.packageName}
+                appName={targetChallengeApp.appName}
+                category={targetChallengeApp.category}
+                accentHex={targetChallengeApp.accentHex}
+                hasValidIconResource={targetChallengeApp.hasValidIconResource}
+                size="lg"
+              />
+              <h2 className="mt-3 text-xl sm:text-2xl font-bold text-slate-900 dark:text-[#F5F7FF]">
+                {targetChallengeApp.appName}
+              </h2>
+              <p className="mt-1 text-xs font-semibold text-[#5B8CFF]">
+                This app is protected by NEXLOCK
+              </p>
+              <p className="mt-0.5 text-[11px] font-mono text-slate-500 dark:text-[#A6B0C3]">
+                Package: {targetChallengeApp.packageName} · Authenticate with Fingerprint or{' '}
+                {targetLen}-Digit Master PIN
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#5B8CFF] to-[#9B7BFF] flex items-center justify-center font-bold text-base text-white mx-auto mb-3 shadow-md">
+                <Shield className="w-7 h-7" />
+              </div>
+              <p className="text-xs text-[#5B8CFF] font-semibold">
+                NEXLOCK Master Authentication Challenge
+              </p>
+              <h2 className="mt-1 text-xl sm:text-2xl font-bold text-slate-900 dark:text-[#F5F7FF]">
+                {preferences.pinConfigured
+                  ? `Enter Your ${targetLen}-Digit Master PIN`
+                  : 'No Master PIN Configured Yet'}
+              </h2>
+            </>
+          )}
           <p className="mt-1 text-xs text-slate-500 dark:text-[#A6B0C3]">
             Failed Attempts: {preferences.failedAttempts}/{preferences.maxFailedAttempts} ·{' '}
             {preferences.randomizeKeypad ? 'Randomized Keypad' : 'Standard Keypad'} ·{' '}
@@ -1272,6 +1410,12 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
                     const res = triggerBiometricAuthentication('SUCCESS');
                     setAuthStatus({ ok: res.ok, text: res.message });
                     if (res.ok) {
+                      if (targetChallengeApp) {
+                        grantPackageChallengeUnlock(
+                          targetChallengeApp.packageName,
+                          'BIOMETRIC_PROMPT'
+                        );
+                      }
                       setShowBiometricSheet(false);
                       setTimeout(() => setCurrentScreen('home'), 450);
                     }
@@ -1771,36 +1915,90 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
           </div>
         </div>
 
-        {/* Global App Re-Lock Behavior */}
-        <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200 dark:border-white/10 space-y-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-[#F5F7FF]">
-              Global Protected App Re-Lock Behavior
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-[#A6B0C3] mt-0.5">
-              Determines when protected applications re-lock after leaving the foreground.
-            </p>
+        {/* Phase 4 Protected App Re-Lock Session Timer (Section 6: Immediately, 5s, 15s, 30s, 1m, 5m) */}
+        <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200 dark:border-white/10 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                Phase 4 Protected App Re-Lock Timer (`AppLockEngine`)
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-[#A6B0C3] mt-0.5">
+                Controls how long an unlocked protected application remains accessible after leaving
+                the foreground.
+              </p>
+            </div>
+            <span className="text-xs font-mono text-[#5B8CFF]">
+              Active Unlocked Sessions: {Object.keys(unlockedPackageSessions).length}
+            </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            {RELOCK_POLICIES.map((pol) => (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {RELOCK_DURATION_OPTIONS.map((opt) => (
               <button
-                key={pol.id}
+                key={opt.id}
                 type="button"
-                onClick={() => setGlobalReLockPolicy(pol.id as ReLockPolicyId)}
+                onClick={() => setReLockDurationOption(opt.id)}
                 className={`p-3.5 rounded-xl text-left border transition-colors ${
-                  preferences.globalReLockPolicy === pol.id
+                  reLockDurationOption === opt.id
                     ? 'border-[#5B8CFF] bg-[#5B8CFF]/10'
                     : 'border-slate-200 dark:border-white/10'
                 }`}
               >
-                <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
-                  {pol.label}
-                </p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-bold text-slate-900 dark:text-[#F5F7FF]">
+                    {opt.label}
+                  </p>
+                  <span className="text-[11px] font-mono text-[#5B8CFF]">{opt.shortLabel}</span>
+                </div>
                 <p className="text-[11px] text-slate-500 dark:text-[#A6B0C3] mt-1">
-                  {pol.description}
+                  {opt.description}
                 </p>
               </button>
+            ))}
+          </div>
+
+          <div className="pt-2 border-t border-slate-200 dark:border-white/10 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                Invalidate All App Unlock Sessions When Screen Turns Off (`ACTION_SCREEN_OFF`)
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-[#A6B0C3]">
+                Immediately revokes temporary per-package unlock sessions whenever the device locks.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLockOnScreenOff(!lockOnScreenOff)}
+              className={`min-h-[40px] min-w-[84px] px-3 rounded-xl text-xs font-semibold ${
+                lockOnScreenOff
+                  ? 'bg-[#2DD4A3] text-[#0B1020]'
+                  : 'bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#A6B0C3]'
+              }`}
+            >
+              {lockOnScreenOff ? 'Enabled' : 'Off'}
+            </button>
+          </div>
+        </div>
+
+        {/* Excluded Applications & Recovery Protection (Section 9) */}
+        <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200 dark:border-white/10 space-y-2.5">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-[#F5F7FF]">
+            Excluded System & Recovery Packages (`ExcludedSystemPackages`)
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-[#A6B0C3]">
+            To prevent recursive lock loops or locking the user out of device recovery and
+            permission settings, NEXLOCK permanently excludes these packages from foreground
+            interception:
+          </p>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {EXCLUDED_SYSTEM_PACKAGES.map((pkgRule) => (
+              <span
+                key={pkgRule.packageName}
+                className="px-2.5 py-1 rounded-lg bg-slate-200/70 dark:bg-white/5 text-[11px] font-mono text-slate-700 dark:text-[#F5F7FF]"
+                title={pkgRule.reason}
+              >
+                {pkgRule.packageName}
+              </span>
             ))}
           </div>
         </div>
@@ -2084,11 +2282,16 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
     );
   }
 
-  // 15. ABOUT NEXLOCK + PHASE 2 (12 TESTS) & PHASE 3 (17 TESTS) RUNNERS
+  // 15. ABOUT NEXLOCK + PHASE 4 (12 TESTS), PHASE 3 (17 TESTS) & PHASE 2 (12 TESTS) RUNNERS
   const handleRunAllTests = async () => {
     setIsRunningTests(true);
     try {
-      const [p3, p2] = await Promise.all([runPhase3UnitTests(), runPhase2UnitTests()]);
+      const [p4, p3, p2] = await Promise.all([
+        runPhase4UnitTests(),
+        runPhase3UnitTests(),
+        runPhase2UnitTests(),
+      ]);
+      setTestResultsP4(p4);
       setTestResultsP3(p3);
       setTestResultsP2(p2);
     } finally {
@@ -2108,7 +2311,7 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
           <span>Security Settings</span>
         </button>
         <span className="text-xs text-slate-500 dark:text-[#A6B0C3]">
-          Screen 15 of 15 · About NEXLOCK & Phase 3 Verification
+          Screen 15 of 15 · About NEXLOCK & Phase 4 Verification
         </span>
       </div>
 
@@ -2122,7 +2325,7 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
               NEXLOCK
             </h1>
             <p className="text-xs text-[#5B8CFF] font-medium">
-              Your Apps. Your Privacy. Your Control. · v3.0.0-phase3
+              Your Apps. Your Privacy. Your Control. · v4.0.0-phase4
             </p>
           </div>
         </div>
@@ -2137,16 +2340,17 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
         </button>
       </div>
 
-      {/* Phase 3 + Phase 2 Unit Test Suite Runner (29 Total Assertions) */}
+      {/* Phase 4 (12) + Phase 3 (17) + Phase 2 (12) Unit Test Suite Runner (41 Total Assertions) */}
       <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200 dark:border-white/10 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-bold text-slate-900 dark:text-[#F5F7FF]">
-              Phase 3 (17 Tests) & Phase 2 (12 Tests) Verification Suite
+              Phase 4 (12 Tests), Phase 3 (17 Tests) & Phase 2 (12 Tests) Verification Suite
             </h2>
             <p className="text-xs text-slate-500 dark:text-[#A6B0C3] mt-0.5">
-              Executes `Phase3AppDiscoveryTest` (PackageManager, LruCache Icons, Search, Filters,
-              Room Unique Index, Uninstall/Update, 250-App Scale) and `Phase2AuthenticationTest`.
+              Executes `Phase4AppLockEngineTest` (Foreground Detection, AppLockActivity Challenge,
+              6 Re-Lock Timers, Screen Off Revocation, Rapid App Switching, Recovery Exclusion,
+              Permission Health), `Phase3AppDiscoveryTest`, and `Phase2AuthenticationTest`.
             </p>
           </div>
 
@@ -2158,10 +2362,39 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
           >
             <Play className="w-3.5 h-3.5" />
             <span>
-              {isRunningTests ? 'Running 29 Unit Tests...' : 'Run All 29 Unit Tests'}
+              {isRunningTests ? 'Running 41 Unit Tests...' : 'Run All 41 Unit Tests'}
             </span>
           </button>
         </div>
+
+        {testResultsP4 && (
+          <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-white/10">
+            <p className="text-xs font-mono text-[#2DD4A3]">
+              Phase 4 Real App Lock Engine Suite:{' '}
+              {testResultsP4.filter((t) => t.passed).length}/{testResultsP4.length} passed
+            </p>
+            <div className="grid grid-cols-1 gap-2">
+              {testResultsP4.map((tr) => (
+                <div
+                  key={tr.id}
+                  className="p-3 rounded-xl bg-white dark:bg-[#151D32] border border-slate-200/80 dark:border-white/10 flex items-start justify-between gap-3"
+                >
+                  <div className="space-y-0.5">
+                    <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                      {tr.name}
+                    </p>
+                    <p className="text-[11px] text-slate-500 dark:text-[#A6B0C3]">
+                      {tr.assertionSummary}
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono text-[#2DD4A3] shrink-0">
+                    PASS · {tr.durationMs}ms
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {testResultsP3 && (
           <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-white/10">
@@ -2232,7 +2465,7 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
             <div
               key={p.phase}
               className={`p-4 rounded-2xl border ${
-                idx <= 2
+                idx <= 3
                   ? 'bg-[#2DD4A3]/10 border-[#2DD4A3]/40'
                   : 'bg-slate-50 dark:bg-[#0B1020] border-slate-200 dark:border-white/10'
               }`}
@@ -2243,7 +2476,7 @@ export const CoreScreens: React.FC<CoreScreensProps> = ({ store, onOpenSourceDra
                 </p>
                 <span
                   className={`text-xs font-semibold ${
-                    idx <= 2 ? 'text-[#2DD4A3]' : 'text-slate-500 dark:text-[#A6B0C3]'
+                    idx <= 3 ? 'text-[#2DD4A3]' : 'text-slate-500 dark:text-[#A6B0C3]'
                   }`}
                 >
                   {p.status}

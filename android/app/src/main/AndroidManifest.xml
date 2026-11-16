@@ -24,24 +24,31 @@
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
-    <!-- Foreground App Usage Detection (Phase 4 implementation - requires explicit user grant in Settings) -->
+    <!-- Foreground App Usage Detection (Phase 4 Active - requires explicit user grant in Settings) -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Lock Screen Overlay Window (Phase 4 implementation - requires explicit user grant in Settings) -->
+    <!-- Lock Screen Overlay / Background Activity Launch Permission (Phase 4 Active) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Foreground Monitoring Service (Phase 4 implementation) -->
+    <!-- Foreground Monitoring Service & Notification (Phase 4 Active) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Boot Recovery for Persistent Monitoring (Phase 4 Active) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:roundIcon="@drawable/ic_launcher_foreground"
         android:label="NEXLOCK"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -51,5 +58,37 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Phase 4 Dedicated Lock Challenge Activity -->
+        <activity
+            android:name=".lockengine.AppLockActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Phase 4 Foreground Monitoring Service (Android 14+ specialUse compliant) -->
+        <service
+            android:name=".monitoring.AppLockMonitoringService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="app_lock_foreground_protection_monitoring" />
+        </service>
+
+        <!-- Phase 4 Boot Recovery Receiver -->
+        <receiver
+            android:name=".monitoring.BootRecoveryReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

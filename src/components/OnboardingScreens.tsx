@@ -782,7 +782,7 @@ export const OnboardingScreens: React.FC<{ store: NexLockStore }> = ({ store }) 
     );
   }
 
-  // 6. PERMISSION SETUP
+  // 6. PERMISSION SETUP & PHASE 4 PERMISSION HEALTH MATRIX
   return (
     <div className="rounded-3xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 p-6 sm:p-10 flex flex-col justify-between min-h-[600px]">
       <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/10 pb-4">
@@ -795,19 +795,155 @@ export const OnboardingScreens: React.FC<{ store: NexLockStore }> = ({ store }) 
           <span>Biometric Setup</span>
         </button>
         <span className="text-xs text-slate-500 dark:text-[#A6B0C3]">
-          Screen 06 of 15 · Permission Setup
+          Screen 06 of 15 · Permission Health & Setup (Phase 4 Active)
         </span>
       </div>
 
       <div className="my-6 space-y-5">
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-[#F5F7FF]">
-            Required Android Special Permissions & OS Boundaries
+            Permission Health & Android Onboarding
           </h2>
           <p className="mt-1.5 text-sm text-slate-600 dark:text-[#A6B0C3]">
-            NEXLOCK explains why every Android permission is required and never uses
-            AccessibilityService as a hidden monitoring mechanism.
+            NEXLOCK checks `AppOpsManager.OPSTR_GET_USAGE_STATS` and `Settings.canDrawOverlays()` on
+            every `onResume()` return from Android Settings. The App Lock Engine never reports
+            Active when required permissions are missing.
           </p>
+        </div>
+
+        {/* Live Permission Health Matrix (Section 3.D) */}
+        <div className="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-[#0B1020] border border-slate-200 dark:border-white/10 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-white/10 pb-3">
+            <h3 className="text-sm font-bold text-slate-900 dark:text-[#F5F7FF]">
+              Live Permission & Engine Health Status
+            </h3>
+            <span
+              className={`text-xs font-semibold ${
+                store.engineOperationalEvaluation.isOperational
+                  ? 'text-[#2DD4A3]'
+                  : 'text-amber-400'
+              }`}
+            >
+              App Lock Engine: {store.engineOperationalEvaluation.isOperational ? 'Active' : 'Paused'}{' '}
+              ({store.engineOperationalEvaluation.badgeLabel})
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Usage Access */}
+            <div className="p-3.5 rounded-xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                  Usage Access (`PACKAGE_USAGE_STATS`)
+                </p>
+                <p
+                  className={`text-xs font-mono mt-0.5 ${
+                    store.permissionHealth.usageAccessGranted ? 'text-[#2DD4A3]' : 'text-rose-400'
+                  }`}
+                >
+                  {store.permissionHealth.usageAccessGranted ? 'Granted' : 'Not Granted'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => store.togglePermissionState('usageAccessGranted')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                  store.permissionHealth.usageAccessGranted
+                    ? 'bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#F5F7FF]'
+                    : 'bg-[#5B8CFF] text-white'
+                }`}
+              >
+                {store.permissionHealth.usageAccessGranted ? 'Revoke (Test)' : 'Grant in Settings'}
+              </button>
+            </div>
+
+            {/* Overlay Permission */}
+            <div className="p-3.5 rounded-xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                  Overlay Permission (`SYSTEM_ALERT_WINDOW`)
+                </p>
+                <p
+                  className={`text-xs font-mono mt-0.5 ${
+                    store.permissionHealth.overlayPermissionGranted
+                      ? 'text-[#2DD4A3]'
+                      : 'text-rose-400'
+                  }`}
+                >
+                  {store.permissionHealth.overlayPermissionGranted ? 'Granted' : 'Not Granted'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => store.togglePermissionState('overlayPermissionGranted')}
+                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                  store.permissionHealth.overlayPermissionGranted
+                    ? 'bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#F5F7FF]'
+                    : 'bg-[#5B8CFF] text-white'
+                }`}
+              >
+                {store.permissionHealth.overlayPermissionGranted
+                  ? 'Revoke (Test)'
+                  : 'Grant in Settings'}
+              </button>
+            </div>
+
+            {/* Notification Permission */}
+            <div className="p-3.5 rounded-xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                  Notification Permission (`POST_NOTIFICATIONS`)
+                </p>
+                <p
+                  className={`text-xs font-mono mt-0.5 ${
+                    store.permissionHealth.notificationPermissionGranted
+                      ? 'text-[#2DD4A3]'
+                      : 'text-amber-400'
+                  }`}
+                >
+                  {store.permissionHealth.notificationPermissionGranted ? 'Granted' : 'Not Granted'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => store.togglePermissionState('notificationPermissionGranted')}
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#F5F7FF] text-xs font-semibold"
+              >
+                {store.permissionHealth.notificationPermissionGranted ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+
+            {/* Monitoring Service Status */}
+            <div className="p-3.5 rounded-xl bg-white dark:bg-[#151D32] border border-slate-200 dark:border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-[#F5F7FF]">
+                  Monitoring Service (`AppLockMonitoringService`)
+                </p>
+                <p
+                  className={`text-xs font-mono mt-0.5 ${
+                    store.monitoringServiceState === 'RUNNING' ? 'text-[#2DD4A3]' : 'text-amber-400'
+                  }`}
+                >
+                  {store.monitoringServiceState === 'RUNNING' ? 'Running' : 'Stopped'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  store.monitoringServiceState === 'RUNNING'
+                    ? store.pauseMonitoringEngine()
+                    : store.startMonitoringEngine()
+                }
+                className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                  store.monitoringServiceState === 'RUNNING'
+                    ? 'bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-[#F5F7FF]'
+                    : 'bg-[#2DD4A3] text-[#0B1020]'
+                }`}
+              >
+                {store.monitoringServiceState === 'RUNNING' ? 'Stop Service' : 'Start Service'}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -842,10 +978,10 @@ export const OnboardingScreens: React.FC<{ store: NexLockStore }> = ({ store }) 
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
           <ShieldAlert className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
           <p className="text-xs text-slate-700 dark:text-[#F5F7FF] leading-relaxed">
-            <span className="font-semibold">Phase 2 Active Status: </span>
-            `USE_BIOMETRIC`, `AndroidKeyStore`, `PinManager`, and `SessionManager` are active now.
-            `PACKAGE_USAGE_STATS` and `SYSTEM_ALERT_WINDOW` system intent launchers activate in
-            Phase 4.
+            <span className="font-semibold">Honest Android Limitation Disclosure: </span>
+            `UsageStatsManager` is a polling-based Android system API and is not a zero-frame kernel
+            hook. A brief visibility window may occur before `AppLockActivity` appears, and
+            aggressive OEM battery savers may delay background polling.
           </p>
         </div>
       </div>
@@ -856,14 +992,14 @@ export const OnboardingScreens: React.FC<{ store: NexLockStore }> = ({ store }) 
           onClick={() => {
             updatePreferences(
               { onboardingCompleted: true },
-              'Onboarding & Permission Review Completed'
+              'Onboarding & Permission Health Verification Completed'
             );
             setCurrentScreen('home');
           }}
           className="min-h-[48px] px-6 py-2.5 rounded-xl bg-[#2DD4A3] hover:bg-[#25be90] text-[#0B1020] font-bold text-sm flex items-center gap-2 transition-colors"
         >
           <Check className="w-4 h-4" />
-          <span>Finish Setup & Enter Home Dashboard</span>
+          <span>Recheck Permissions & Enter Home Dashboard</span>
         </button>
       </div>
     </div>

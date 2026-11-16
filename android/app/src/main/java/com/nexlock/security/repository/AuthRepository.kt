@@ -1,6 +1,6 @@
 package com.nexlock.security.repository
 
-import android.util.Base64
+import java.util.Base64
 import com.nexlock.security.auth.AuthMethod
 import com.nexlock.security.auth.AuthenticationResult
 import com.nexlock.security.auth.PinManager
@@ -54,7 +54,7 @@ class AuthRepository(
         val encrypted = keyManager.encryptPayload(record.verifierBytes)
         return when (encrypted) {
             is EncryptedEnvelopeResult.Success -> {
-                val saltB64 = Base64.encodeToString(record.saltBytes, Base64.NO_WRAP)
+                val saltB64 = Base64.getEncoder().encodeToString(record.saltBytes)
                 settingsStore.saveEncryptedPinVerifier(
                     saltBase64 = saltB64,
                     ivBase64 = encrypted.ivBase64,
@@ -73,7 +73,7 @@ class AuthRepository(
                 }
                 val retry = keyManager.encryptPayload(record.verifierBytes)
                 if (retry is EncryptedEnvelopeResult.Success) {
-                    val saltB64 = Base64.encodeToString(record.saltBytes, Base64.NO_WRAP)
+                    val saltB64 = Base64.getEncoder().encodeToString(record.saltBytes)
                     settingsStore.saveEncryptedPinVerifier(
                         saltBase64 = saltB64,
                         ivBase64 = retry.ivBase64,
@@ -128,7 +128,7 @@ class AuthRepository(
             }
         }
 
-        val saltBytes = Base64.decode(snapshot.pinSaltBase64, Base64.NO_WRAP)
+        val saltBytes = Base64.getDecoder().decode(snapshot.pinSaltBase64)
         val isCorrect = pinManager.verifyPin(
             candidatePin = candidatePin,
             storedSalt = saltBytes,

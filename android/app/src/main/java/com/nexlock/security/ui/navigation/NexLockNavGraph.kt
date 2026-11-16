@@ -24,8 +24,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.nexlock.security.ui.screens.NexLockPhase1ScreenHost
+import com.nexlock.security.viewmodel.AppManagerViewModel
 import com.nexlock.security.viewmodel.AuthenticationViewModel
 import com.nexlock.security.viewmodel.NexLockViewModel
+import com.nexlock.security.viewmodel.ProtectionEngineViewModel
 
 enum class NexLockRoute(val route: String, val title: String) {
     SPLASH("splash", "Splash Screen"),
@@ -64,11 +66,15 @@ val bottomNavDestinations = listOf(
 fun NexLockAppRoot(
     viewModel: NexLockViewModel,
     authViewModel: AuthenticationViewModel,
+    appManagerViewModel: AppManagerViewModel,
+    protectionEngineViewModel: ProtectionEngineViewModel,
     activity: FragmentActivity
 ) {
     val navController = rememberNavController()
     val uiState by viewModel.uiState.collectAsState()
     val authState by authViewModel.authState.collectAsState()
+    val appManagerState by appManagerViewModel.uiState.collectAsState()
+    val engineState by protectionEngineViewModel.engineState.collectAsState()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: NexLockRoute.SPLASH.route
 
@@ -110,8 +116,12 @@ fun NexLockAppRoot(
                         route = screenRoute,
                         uiState = uiState,
                         authState = authState,
+                        appManagerState = appManagerState,
+                        engineState = engineState,
                         viewModel = viewModel,
                         authViewModel = authViewModel,
+                        appManagerViewModel = appManagerViewModel,
+                        protectionEngineViewModel = protectionEngineViewModel,
                         activity = activity,
                         onNavigate = { target -> navController.navigate(target.route) }
                     )

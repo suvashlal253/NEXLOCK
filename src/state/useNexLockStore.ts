@@ -10,6 +10,18 @@ import {
   mergeDiscoveredAppsWithRoom,
 } from '../discovery/appDiscoveryEngine';
 import {
+  evaluateEngineOperationalStatus,
+  evaluateForegroundTransition,
+  EXCLUDED_SYSTEM_PACKAGES,
+  getPackageExclusionReason,
+  isPackageExcludedFromLocking,
+  MonitoringServiceStateType,
+  PackageUnlockSessionRecord,
+  PermissionHealthSnapshot,
+  RELOCK_DURATION_OPTIONS,
+  ReLockDurationId,
+} from '../monitoring/appLockEngine';
+import {
   createEncryptedPinEnvelope,
   deriveStandaloneVerifierBase64,
   isKeystoreKeyHealthy,
@@ -38,6 +50,7 @@ const STORAGE_KEYS = {
   LOCKED_ROOM: 'nexlock_phase3_room_locked_apps_v1',
   EVENTS: 'nexlock_phase2_room_events_v1',
   PREFS: 'nexlock_phase2_datastore_prefs_v1',
+  ENGINE_CFG: 'nexlock_phase4_engine_config_v1',
 };
 
 const DEFAULT_PREFERENCES: UserPreferencesState = {
@@ -98,6 +111,30 @@ export function useNexLockStore() {
   const [isRefreshingPackages, setIsRefreshingPackages] = useState<boolean>(false);
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
 
+  // Phase 4 Real App Lock Engine & Foreground Monitoring State
+  const [permissionHealth, setPermissionHealth] = useState<PermissionHealthSnapshot>({
+    usageAccessGranted: true,
+    overlayPermissionGranted: true,
+    notificationPermissionGranted: true,
+  });
+  const [monitoringServiceState, setMonitoringServiceState] =
+    useState<MonitoringServiceStateType>('RUNNING');
+  const [isMonitoringEnabledByUser, setIsMonitoringEnabledByUser] = useState<boolean>(true);
+  const [reLockDurationOption, setReLockDurationOption] = useState<ReLockDurationId>('SECONDS_15');
+  const [lockOnScreenOff, setLockOnScreenOff] = useState<boolean>(true);
+  const [isScreenInteractive, setIsScreenInteractive] = useState<boolean>(true);
+  const [currentForegroundPackage, setCurrentForegroundPackage] = useState<string | null>(
+    'com.nexlock.security'
+  );
+  const [activeChallengePackage, setActiveChallengePackage] = useState<string | null>(null);
+  const [isChallengeActivityVisible, setIsChallengeActivityVisible] = useState<boolean>(false);
+  const [unlockedPackageSessions, setUnlockedPackageSessions] = useState<
+    Record<string, PackageUnlockSessionRecord>
+  >({});
+  const [lastMonitoringEventEpochMillis, setLastMonitoringEventEpochMillis] = useState<number>(
+    () => Date.now()
+  );
+
   const [discoveredPackages, setDiscoveredPackages] = useState<InstalledAppRecord[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.DISCOVERED);
@@ -110,7 +147,9 @@ export function useNexLockStore() {
   const [lockedRoomRows, setLockedRoomRows] = useState<LockedAppRoomRow[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.LOCKED_ROOM);
-      return saved ? JSON.parse(saved) : INITIAL_LOCKED_ROOM_ROWS;
+      return saved
+        ? JSON.parse(saved).filter((r: LockedAppRoomRow) => !isPackageExcludedFromLocking(r.packageName))
+        : INITIAL_LOCKED_ROOM_ROWS;
     } catch {
       return INITIAL_LOCKED_ROOM_ROWS;
     }
@@ -622,11 +661,19 @@ export function useNexLockStore() {
     }
   };
 
-  // Phase 3: Individual App Lock Management (with unique packageName constraint in locked_apps)
+  // Phase 3 & 4: Individual App Lock Management (with unique packageName constraint & Safe Exclusion check)
   const toggleAppLock = (packageName: string) => {
     touchSessionActivity();
     const targetApp = apps.find((a) => a.packageName === packageName);
     if (!targetApp) return;
+
+    if (isPackageExcludedFromLocking(packageName)) {
+      const reason =
+        getPackageExclusionReason(packageName) ??
+        'Excluded critical Android system/recovery package.';
+      setDiscoveryNotice(`Excluded for Safe Recovery: ${targetApp.appName} (${reason})`);
+      return;
+    }
 
     if (!targetApp.isInstalled || !targetApp.isVisible) {
       setDiscoveryNotice(
@@ -656,9 +703,17 @@ export function useNexLockStore() {
       }
     });
 
+    if (!nextLocked) {
+      setUnlockedPackageSessions((prev) => {
+        const copy = { ...prev };
+        delete copy[packageName];
+        return copy;
+      });
+    }
+
     const statusDetail = nextLocked
       ? preferences.pinConfigured
-        ? `Protection Configured in Room locked_apps (${packageName}). Active foreground enforcement activates in Phase 4.`
+        ? `Protection Configured in Room locked_apps (${packageName}). Active foreground enforcement via AppLockMonitoringService.`
         : `Selected for Protection in Room locked_apps (${packageName}). Create your Master PIN to complete configuration.`
       : `Removed ${packageName} from Room locked_apps table.`;
 
@@ -666,7 +721,7 @@ export function useNexLockStore() {
       nextLocked
         ? `${targetApp.appName}: ${
             preferences.pinConfigured ? 'Protection Configured' : 'Selected for Protection'
-          } (Saved to Room DB; Phase 4 Lock Engine required for OS interception).`
+          } (Saved to Room DB).`
         : `${targetApp.appName} removed from protected list.`
     );
 
@@ -679,6 +734,235 @@ export function useNexLockStore() {
         : `${targetApp.appName} Removed from Protected List`,
       statusDetail,
       packageName
+    );
+  };
+
+  // Phase 4: Evaluate Operational Status honestly
+  const engineOperationalEvaluation = useMemo(
+    () =>
+      evaluateEngineOperationalStatus({
+        permissions: permissionHealth,
+        serviceState: monitoringServiceState,
+        isMonitoringEnabledByUser,
+        selectedLockedCount: lockedRoomRows.length,
+      }),
+    [permissionHealth, monitoringServiceState, isMonitoringEnabledByUser, lockedRoomRows.length]
+  );
+
+  // Phase 4: Toggle Required Android Special Permissions (Usage Access, Overlay, Notifications)
+  const togglePermissionState = (
+    key: 'usageAccessGranted' | 'overlayPermissionGranted' | 'notificationPermissionGranted'
+  ) => {
+    setPermissionHealth((prev) => {
+      const nextVal = !prev[key];
+      const nextPerms = { ...prev, [key]: nextVal };
+      if (!nextPerms.usageAccessGranted || !nextPerms.overlayPermissionGranted) {
+        setMonitoringServiceState('STOPPED');
+        setDiscoveryNotice(
+          'Required permission revoked in Android Settings. AppLockMonitoringService paused automatically.'
+        );
+        appendEvent(
+          'PREF_UPDATED',
+          `Permission Revoked (${key}) — Engine Paused`,
+          'AppLockMonitoringService stopped because Usage Access or Overlay permission is missing.'
+        );
+      } else if (isMonitoringEnabledByUser && lockedRoomRows.length > 0) {
+        setMonitoringServiceState('RUNNING');
+        setDiscoveryNotice(
+          'All required permissions granted. AppLockMonitoringService is now Running and Operational.'
+        );
+        appendEvent(
+          'PREF_UPDATED',
+          `Permission Granted (${key}) — Engine Active`,
+          'Usage Access and Overlay permissions verified; AppLockMonitoringService started.'
+        );
+      }
+      return nextPerms;
+    });
+  };
+
+  const startMonitoringEngine = () => {
+    setIsMonitoringEnabledByUser(true);
+    if (!permissionHealth.usageAccessGranted || !permissionHealth.overlayPermissionGranted) {
+      setMonitoringServiceState('STOPPED');
+      setDiscoveryNotice(
+        'Cannot start monitoring: Grant Usage Access and Display Over Other Apps permissions first.'
+      );
+      setCurrentScreenState('permission_setup');
+      return;
+    }
+    setMonitoringServiceState('RUNNING');
+    setDiscoveryNotice('AppLockMonitoringService started. Foreground app protection is Active.');
+    appendEvent(
+      'PREF_UPDATED',
+      'AppLockMonitoringService Started',
+      'Foreground service running with adaptive UsageStatsManager polling.'
+    );
+  };
+
+  const pauseMonitoringEngine = () => {
+    setIsMonitoringEnabledByUser(false);
+    setMonitoringServiceState('STOPPED');
+    setUnlockedPackageSessions({});
+    setActiveChallengePackage(null);
+    setIsChallengeActivityVisible(false);
+    setDiscoveryNotice('Protection paused by user. Selected apps are not currently intercepted.');
+    appendEvent(
+      'PREF_UPDATED',
+      'AppLockMonitoringService Paused by User',
+      'Foreground monitoring service stopped and temporary package sessions cleared.'
+    );
+  };
+
+  // Phase 4: Simulate launching an application into the foreground on the Android device
+  const simulateForegroundLaunch = (packageName: string) => {
+    const nowElapsed = Math.round(performance.now());
+    setLastMonitoringEventEpochMillis(Date.now());
+
+    // If engine is not operational, foreground launch is not intercepted
+    if (!engineOperationalEvaluation.isOperational) {
+      setCurrentForegroundPackage(packageName);
+      setDiscoveryNotice(
+        `Opened ${packageName} without interception because App Lock Engine is ${engineOperationalEvaluation.badgeLabel}.`
+      );
+      return;
+    }
+
+    const lockedSet = new Set(lockedRoomRows.filter((r) => r.isLocked).map((r) => r.packageName));
+    const evalRes = evaluateForegroundTransition({
+      targetPackage: packageName,
+      previousForegroundPackage: currentForegroundPackage,
+      lockedPackages: lockedSet,
+      unlockedSessions: unlockedPackageSessions,
+      activeChallengePackage,
+      isChallengeActivityVisible,
+      reLockOption: reLockDurationOption,
+      nowElapsedMillis: nowElapsed,
+    });
+
+    setCurrentForegroundPackage(evalRes.nextForegroundPackage);
+    setActiveChallengePackage(evalRes.nextActiveChallengePackage);
+    setIsChallengeActivityVisible(evalRes.nextChallengeVisible);
+    setUnlockedPackageSessions(evalRes.nextSessions);
+
+    const appObj = apps.find((a) => a.packageName === packageName);
+    const label = appObj?.appName ?? packageName;
+
+    switch (evalRes.decision.type) {
+      case 'ALLOW_EXCLUDED':
+        setDiscoveryNotice(`Allowed ${label}: ${evalRes.decision.reason}`);
+        break;
+      case 'ALLOW_UNPROTECTED':
+        setDiscoveryNotice(
+          `Foreground transition to ${label} (${packageName}) allowed (Unprotected).`
+        );
+        break;
+      case 'ALLOW_ACTIVE_SESSION':
+        setDiscoveryNotice(
+          `Foreground transition to ${label} allowed via active unlock session (${reLockDurationOption}).`
+        );
+        break;
+      case 'SUPPRESS_DUPLICATE_CHALLENGE':
+        setDiscoveryNotice(
+          `Duplicate AppLockActivity launch suppressed for ${label} (already challenging).`
+        );
+        setCurrentScreenState('auth_screen');
+        break;
+      case 'REQUIRE_AUTHENTICATION':
+        setDiscoveryNotice(
+          `AppLockMonitoringService detected protected app "${label}" in foreground -> Launched AppLockActivity!`
+        );
+        appendEvent(
+          'AUTH_LOCKOUT',
+          `Intercepted Foreground Launch: ${label}`,
+          `UsageStatsManager detected ACTIVITY_RESUMED for ${packageName}; launched AppLockActivity authentication challenge.`,
+          packageName
+        );
+        setCurrentScreenState('auth_screen');
+        break;
+    }
+  };
+
+  const grantPackageChallengeUnlock = (
+    packageName: string,
+    method: 'MASTER_PIN' | 'BIOMETRIC_PROMPT'
+  ) => {
+    const nowElapsed = Math.round(performance.now());
+    setUnlockedPackageSessions((prev) => ({
+      ...prev,
+      [packageName]: {
+        packageName,
+        unlockedAtElapsedMillis: nowElapsed,
+        lastForegroundElapsedMillis: nowElapsed,
+        backgroundedAtElapsedMillis: null,
+        authMethod: method,
+      },
+    }));
+    setActiveChallengePackage(null);
+    setIsChallengeActivityVisible(false);
+    setCurrentForegroundPackage(packageName);
+    const appObj = apps.find((a) => a.packageName === packageName);
+    const label = appObj?.appName ?? packageName;
+    setDiscoveryNotice(
+      `Unlocked ${label} via ${method}. Temporary package session active (${reLockDurationOption}).`
+    );
+    appendEvent(
+      'AUTH_SUCCESS',
+      `Unlocked Protected App: ${label} (${method})`,
+      `Granted temporary package access session (${reLockDurationOption}).`,
+      packageName
+    );
+  };
+
+  const dismissChallengeToHomeLauncher = () => {
+    const challenged = activeChallengePackage;
+    setActiveChallengePackage(null);
+    setIsChallengeActivityVisible(false);
+    setCurrentForegroundPackage('com.google.android.apps.nexuslauncher');
+    setDiscoveryNotice(
+      challenged
+        ? `Canceled authentication for ${challenged}. Navigated safely to Android Home Launcher.`
+        : 'Exited to Android Home Launcher.'
+    );
+    setCurrentScreenState('home');
+  };
+
+  const simulateScreenOff = () => {
+    setIsScreenInteractive(false);
+    setActiveChallengePackage(null);
+    setIsChallengeActivityVisible(false);
+    if (lockOnScreenOff) {
+      setUnlockedPackageSessions({});
+      setDiscoveryNotice(
+        'ACTION_SCREEN_OFF received: All temporary package unlock sessions revoked immediately.'
+      );
+      appendEvent(
+        'SESSION_LOCKED',
+        'Screen Turned Off — Protected Apps Re-Locked',
+        'BroadcastReceiver handled Intent.ACTION_SCREEN_OFF and cleared temporary package unlock sessions.'
+      );
+    } else {
+      const nowElapsed = Math.round(performance.now());
+      setUnlockedPackageSessions((prev) => {
+        const next: Record<string, PackageUnlockSessionRecord> = {};
+        for (const [pkg, sess] of Object.entries(prev)) {
+          next[pkg] = {
+            ...sess,
+            backgroundedAtElapsedMillis: sess.backgroundedAtElapsedMillis ?? nowElapsed,
+          };
+        }
+        return next;
+      });
+      setDiscoveryNotice(
+        'ACTION_SCREEN_OFF received: Started background re-lock timers for unlocked apps.'
+      );
+    }
+  };
+
+  const simulateScreenOn = () => {
+    setIsScreenInteractive(true);
+    setDiscoveryNotice(
+      'ACTION_SCREEN_ON / ACTION_USER_PRESENT received: Resumed adaptive UsageStatsManager polling.'
     );
   };
 
@@ -705,7 +989,11 @@ export function useNexLockStore() {
     if (selectedPackageSet.length === 0) return;
     const now = Date.now();
     const targetApps = apps.filter(
-      (a) => selectedPackageSet.includes(a.packageName) && a.isInstalled && a.isVisible
+      (a) =>
+        selectedPackageSet.includes(a.packageName) &&
+        a.isInstalled &&
+        a.isVisible &&
+        !isPackageExcludedFromLocking(a.packageName)
     );
 
     setLockedRoomRows((prev) => {
@@ -752,7 +1040,14 @@ export function useNexLockStore() {
 
   const confirmLockAllEligibleApps = () => {
     setRequiresBulkLockConfirmation(false);
-    const eligible = apps.filter((a) => a.isLaunchable && a.isInstalled && a.isVisible);
+    const eligible = apps.filter(
+      (a) =>
+        a.isLaunchable &&
+        a.isInstalled &&
+        a.isVisible &&
+        !a.isSystemApp &&
+        !isPackageExcludedFromLocking(a.packageName)
+    );
     const now = Date.now();
 
     setLockedRoomRows((prev) => {
@@ -775,18 +1070,19 @@ export function useNexLockStore() {
     });
 
     setDiscoveryNotice(
-      `Locked all ${eligible.length} eligible launchable applications after explicit confirmation.`
+      `Locked all ${eligible.length} eligible user-installed applications after explicit confirmation.`
     );
     appendEvent(
       'BULK_LOCK_UPDATED',
       `Locked All ${eligible.length} Eligible Applications`,
-      'User confirmed bulk lock operation; persisted to Room locked_apps.'
+      'User confirmed bulk lock operation; persisted to Room locked_apps (critical system/recovery apps excluded).'
     );
   };
 
   const unlockAllProtectedApps = () => {
     const count = lockedRoomRows.length;
     setLockedRoomRows([]);
+    setUnlockedPackageSessions({});
     setDiscoveryNotice(`Unlocked all ${count} previously protected applications.`);
     appendEvent(
       'BULK_LOCK_UPDATED',
@@ -1069,6 +1365,19 @@ export function useNexLockStore() {
     setLastAuthMethod(null);
     setSimulatedKeyInvalidated(false);
     setKeystoreHealthy(true);
+    setPermissionHealth({
+      usageAccessGranted: true,
+      overlayPermissionGranted: true,
+      notificationPermissionGranted: true,
+    });
+    setMonitoringServiceState('RUNNING');
+    setIsMonitoringEnabledByUser(true);
+    setReLockDurationOption('SECONDS_15');
+    setLockOnScreenOff(true);
+    setIsScreenInteractive(true);
+    setActiveChallengePackage(null);
+    setIsChallengeActivityVisible(false);
+    setUnlockedPackageSessions({});
   };
 
   const selectedApp =
@@ -1116,6 +1425,32 @@ export function useNexLockStore() {
     removeStaleUninstalledPackage,
     discoveryNotice,
     setDiscoveryNotice,
+    // Phase 4 Engine State & Actions
+    permissionHealth,
+    togglePermissionState,
+    monitoringServiceState,
+    isMonitoringEnabledByUser,
+    engineOperationalEvaluation,
+    reLockDurationOption,
+    setReLockDurationOption,
+    lockOnScreenOff,
+    setLockOnScreenOff,
+    isScreenInteractive,
+    currentForegroundPackage,
+    activeChallengePackage,
+    isChallengeActivityVisible,
+    unlockedPackageSessions,
+    lastMonitoringEventEpochMillis,
+    startMonitoringEngine,
+    pauseMonitoringEngine,
+    simulateForegroundLaunch,
+    grantPackageChallengeUnlock,
+    dismissChallengeToHomeLauncher,
+    simulateScreenOff,
+    simulateScreenOn,
+    excludedSystemPackages: EXCLUDED_SYSTEM_PACKAGES,
+    reLockDurationOptions: RELOCK_DURATION_OPTIONS,
+    // Phase 2 Auth State & Actions
     isSessionAuthenticated,
     lastAuthMethod,
     sessionRemainingSeconds,

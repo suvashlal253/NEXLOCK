@@ -14,6 +14,7 @@ import com.nexlock.security.database.NexLockDatabase
 import com.nexlock.security.database.PreferencesManager
 import com.nexlock.security.discovery.AppDiscoveryRepository
 import com.nexlock.security.discovery.PackageChangeReceiver
+import com.nexlock.security.monitoring.AppLockEngineRepository
 import com.nexlock.security.repository.AuthRepository
 import com.nexlock.security.repository.LockedAppsRepository
 import com.nexlock.security.repository.NexLockRepository
@@ -24,11 +25,13 @@ import com.nexlock.security.ui.theme.NexLockTheme
 import com.nexlock.security.viewmodel.AppManagerViewModel
 import com.nexlock.security.viewmodel.AuthenticationViewModel
 import com.nexlock.security.viewmodel.NexLockViewModel
+import com.nexlock.security.viewmodel.ProtectionEngineViewModel
 
 class MainActivity : FragmentActivity() {
 
     private lateinit var sessionManager: SessionManager
     private lateinit var appManagerViewModel: AppManagerViewModel
+    private lateinit var protectionEngineViewModel: ProtectionEngineViewModel
     private var packageChangeReceiver: PackageChangeReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -61,6 +64,9 @@ class MainActivity : FragmentActivity() {
             lockedAppsDao = database.lockedAppsDao(),
             securityEventDao = database.securityEventDao()
         )
+
+        // Phase 4 Real App Lock Engine & Monitoring Service Coordinator
+        val engineRepository = AppLockEngineRepository.getInstance(applicationContext)
 
         val viewModel = ViewModelProvider(
             this,
@@ -103,6 +109,19 @@ class MainActivity : FragmentActivity() {
             }
         )[AppManagerViewModel::class.java]
 
+        protectionEngineViewModel = ViewModelProvider(
+            this,
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return ProtectionEngineViewModel(
+                        appContext = applicationContext,
+                        engineRepository = engineRepository
+                    ) as T
+                }
+            }
+        )[ProtectionEngineViewModel::class.java]
+
         // Dynamically register PackageChangeReceiver for install/update/uninstall events
         packageChangeReceiver = PackageChangeReceiver.register(this) { event ->
             appManagerViewModel.onPackageBroadcastEvent(event)
@@ -114,6 +133,8 @@ class MainActivity : FragmentActivity() {
                 NexLockAppRoot(
                     viewModel = viewModel,
                     authViewModel = authViewModel,
+                    appManagerViewModel = appManagerViewModel,
+                    protectionEngineViewModel = protectionEngineViewModel,
                     activity = this@MainActivity
                 )
             }
@@ -122,9 +143,12 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Reconcile any package changes that occurred while NEXLOCK was in the background
+        // Reconcile any package changes and recheck Usage Access / Overlay permissions on return from Settings
         if (::appManagerViewModel.isInitialized) {
             appManagerViewModel.refreshInstalledApps(isInitialLoad = false)
+        }
+        if (::protectionEngineViewModel.isInitialized) {
+            protectionEngineViewModel.refreshPermissionsAndSyncService()
         }
     }
 

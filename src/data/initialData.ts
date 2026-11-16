@@ -443,12 +443,12 @@ export const INITIAL_DISCOVERED_PACKAGES: InstalledAppRecord[] = [
     versionName: '15.0-API35',
     isSystemApp: true,
     isLaunchable: true,
-    isLocked: true,
+    isLocked: false,
     isVisible: true,
     isInstalled: true,
     hasValidIconResource: true,
     iconDrawableUri: 'drawable://com.android.settings/ic_launcher_adaptive',
-    protectionStatus: 'PROTECTION_CONFIGURED',
+    protectionStatus: 'UNPROTECTED',
     allowBiometric: false,
     hideNotificationsPreview: false,
     customReLockPolicy: 'IMMEDIATELY',
@@ -474,6 +474,15 @@ export const INITIAL_APPS_CATALOG = INITIAL_DISCOVERED_PACKAGES;
 
 export const INITIAL_SECURITY_EVENTS: SecurityEventEntity[] = [
   {
+    id: 'evt-p4-init',
+    eventType: 'PHASE3_DISCOVERY',
+    packageName: null,
+    title: 'Phase 4 AppLockMonitoringService & Lock Engine Active',
+    detail:
+      'UsageStatsManager foreground detector, per-package monotonic re-lock sessions, AppLockActivity challenge screen, and safe recovery exclusions online.',
+    timestampMillis: Date.now() - 1000 * 30,
+  },
+  {
     id: 'evt-p3-init',
     eventType: 'PHASE3_DISCOVERY',
     packageName: null,
@@ -490,14 +499,6 @@ export const INITIAL_SECURITY_EVENTS: SecurityEventEntity[] = [
     detail:
       'PinManager (PBKDF2-HMAC-SHA256, 210,000 iterations), SecureKeyManager (AES-256-GCM), NexLockBiometricManager, and monotonic SessionManager online.',
     timestampMillis: Date.now() - 1000 * 60 * 15,
-  },
-  {
-    id: 'evt-2',
-    eventType: 'CONFIG_LOCK_ENABLED',
-    packageName: 'com.android.settings',
-    title: 'Android System Settings Policy Configured',
-    detail: 'Saved in Room locked_apps table with unique packageName constraint.',
-    timestampMillis: Date.now() - 1000 * 60 * 28,
   },
 ];
 
@@ -529,22 +530,22 @@ export const DOCUMENTED_PERMISSIONS: PermissionExplanation[] = [
     title: 'Usage Access (UsageStatsManager)',
     androidConstant: 'android.permission.PACKAGE_USAGE_STATS',
     whyNeeded:
-      'Required so NEXLOCK can query foreground activity transitions (UsageEvents.Event.ACTIVITY_RESUMED) and know when a protected application is opened.',
+      'Required so AppLockMonitoringService can query foreground activity transitions (UsageEvents.Event.ACTIVITY_RESUMED) and detect when a protected application enters the foreground.',
     osLimitationNote:
-      'Must be explicitly granted by the user in Android Settings > Special App Access. NEXLOCK respects Android background execution limits and never uses AccessibilityService for hidden surveillance.',
-    targetPhase: 'Phase 4 — Lock Engine',
-    statusLabel: 'Scheduled for Phase 4',
+      'Must be explicitly granted in Android Settings > Special App Access > Usage Access. UsageStatsManager is a polling API and may have a brief detection window depending on OEM battery policies.',
+    targetPhase: 'Phase 4 — Active',
+    statusLabel: 'Implemented in Phase 4',
   },
   {
     id: 'overlay',
-    title: 'Display Over Other Apps (Window Overlay)',
+    title: 'Display Over Other Apps (SYSTEM_ALERT_WINDOW)',
     androidConstant: 'android.permission.SYSTEM_ALERT_WINDOW',
     whyNeeded:
-      'Required to present the NEXLOCK authentication shield immediately over a protected application when it enters the foreground.',
+      'Required on Android 10+ so AppLockMonitoringService can reliably launch AppLockActivity over a protected application when it enters the foreground.',
     osLimitationNote:
-      'Third-party Android overlays cannot block OS-level safe mode boot, ADB debugging, or system force-stop dialogs. NEXLOCK is transparent about Android OS security boundaries.',
-    targetPhase: 'Phase 4 — Lock Engine',
-    statusLabel: 'Scheduled for Phase 4',
+      'Third-party Android apps cannot override OS-level Safe Mode, ADB, or system force-stop dialogs. NEXLOCK automatically excludes System Settings and Emergency Dialer for safe recovery.',
+    targetPhase: 'Phase 4 — Active',
+    statusLabel: 'Implemented in Phase 4',
   },
 ];
 
@@ -566,16 +567,16 @@ export const DEVELOPMENT_PHASES = [
   {
     phase: 'Phase 3',
     title: 'Real Installed App Discovery & App Management System',
-    status: 'Active & Complete',
+    status: 'Complete',
     summary:
       'AppDiscoveryRepository (PackageManager on Dispatchers.IO), Android 11+ <queries> visibility, LruCache Drawable icon caching, 10 automatic categories, Room locked_apps unique index with MIGRATION_1_2, bulk selection, and PackageChangeReceiver.',
   },
   {
     phase: 'Phase 4',
-    title: 'UsageStatsManager Monitoring & Overlay Lock Engine',
-    status: 'Upcoming — Phase 4',
+    title: 'UsageStatsManager Monitoring & Real App Lock Engine',
+    status: 'Active & Complete',
     summary:
-      'Foreground service polling UsageEvents and presenting SYSTEM_ALERT_WINDOW authentication shields with documented OS boundaries.',
+      'AppLockMonitoringService (ForegroundService specialUse), ForegroundAppDetector, AppLockEngine state machine, AppLockActivity challenge screen, 6 re-lock timer options, and safe recovery exclusions.',
   },
   {
     phase: 'Phase 5',

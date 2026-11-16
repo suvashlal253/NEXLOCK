@@ -1,0 +1,80 @@
+name: Build & Publish NEXLOCK APK Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk-and-release:
+    name: Build Signed Android APK & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Run Phase 2 & Phase 3 Unit Tests
+        working-directory: ./android
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build Signed Release & Debug APKs
+        working-directory: ./android
+        run: gradle assembleRelease assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare Release Artifacts
+        run: |
+          mkdir -p dist-apk
+          cp android/app/build/outputs/apk/release/app-release.apk dist-apk/NEXLOCK-v1.3.0-phase3-release.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist-apk/NEXLOCK-v1.3.0-phase3-debug.apk
+          ls -lh dist-apk/
+
+      - name: Upload APK Artifacts to Workflow Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXLOCK-v1.3.0-phase3-APKs
+          path: dist-apk/*.apk
+
+      - name: Create or Update GitHub Release with APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v1.3.0-phase3"
+          TITLE="NEXLOCK v1.3.0 (Phase 1 + Phase 2 Auth & Keystore + Phase 3 Installed App Discovery)"
+          NOTES="### NEXLOCK v1.3.0 — Native Android Security Application
+          **Your Apps. Your Privacy. Your Control.**
+
+          #### Included in this Release:
+          - **Phase 1**: Jetpack Compose Material 3 Dark/Light UI, 15 Screens, Room Database, DataStore Preferences
+          - **Phase 2**: Real Master PIN (PBKDF2-HMAC-SHA256, 210,000 iterations, 128-bit CSPRNG salt), AndroidKeyStore AES-256-GCM envelope encryption, AndroidX BiometricPrompt, Monotonic Clock SessionManager, Temporary Brute-Force Lockout
+          - **Phase 3**: Real Installed App Discovery (\`PackageManager\`), Android 11+ package visibility compliance, \`AppIconMemoryCache\` (\`LruCache\`), 10 automatic app categories, Room \`locked_apps\` persistence, \`PackageChangeReceiver\` install/update/uninstall tracking, and 29 passing unit tests.
+
+          #### Attached APKs:
+          - \`NEXLOCK-v1.3.0-phase3-release.apk\` (Signed & installable Release APK)
+          - \`NEXLOCK-v1.3.0-phase3-debug.apk\` (Signed Debug APK)"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist-apk/NEXLOCK-v1.3.0-phase3-release.apk dist-apk/NEXLOCK-v1.3.0-phase3-debug.apk --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create "$TAG" dist-apk/NEXLOCK-v1.3.0-phase3-release.apk dist-apk/NEXLOCK-v1.3.0-phase3-debug.apk --title "$TITLE" --notes "$NOTES"
+          fi

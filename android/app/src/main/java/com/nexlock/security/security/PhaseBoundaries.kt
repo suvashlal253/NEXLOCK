@@ -25,11 +25,11 @@ object PhaseArchitectureContracts {
             get() = "Phase 3 Active: Queries Android PackageManager on Dispatchers.IO with Android 11+ <queries> visibility, LruCache Drawable icon memory cache, automatic 10-category classification, Room locked_apps unique index, and PackageChangeReceiver."
     }
 
-    // App Monitoring & Lock Engine Module (Phase 4 Target)
+    // App Monitoring & Lock Engine Module (Phase 4 Implemented)
     interface AppMonitoringEngineContract {
-        val isImplementedInCurrentPhase: Boolean get() = false
+        val isImplementedInCurrentPhase: Boolean get() = true
         val implementationNote: String
-            get() = "Phase 4 uses UsageStatsManager.queryEvents() inside a user-visible ForegroundService and presents a SYSTEM_ALERT_WINDOW lock view. Does not use AccessibilityService for hidden surveillance."
+            get() = "Phase 4 Active: Uses UsageStatsManager.queryEvents() inside a transparent ForegroundService (specialUse), enforces monotonic per-package re-lock sessions, and launches AppLockActivity. Never uses AccessibilityService surveillance."
     }
 
     // Encrypted Private Vault Module (Phase 5 Target)
