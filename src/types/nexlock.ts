@@ -123,6 +123,8 @@ export interface ReLockPolicyOption {
   description: string;
 }
 
+export type SecurityEventSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+
 export interface SecurityEventEntity {
   id: string;
   eventType:
@@ -139,12 +141,32 @@ export interface SecurityEventEntity {
     | 'PIN_CREATED'
     | 'PIN_CHANGED'
     | 'AUTH_SUCCESS'
+    | 'UNLOCK_SUCCESS'
     | 'AUTH_FAILED'
+    | 'FAILED_PIN'
+    | 'FAILED_BIOMETRIC'
     | 'AUTH_LOCKOUT'
+    | 'INTRUDER_DETECTED'
+    | 'INTRUDER_THRESHOLD_REACHED'
+    | 'INTRUDER_IMAGE_CAPTURED'
+    | 'INTRUDER_SELFIE_CAPTURED'
+    | 'INTRUDER_IMAGES_DELETED'
+    | 'QUICK_LOCK_EXECUTED'
+    | 'QUICK_LOCK_TRIGGERED'
+    | 'PERMISSION_REVOKED'
+    | 'VAULT_FILE_ENCRYPTED'
+    | 'VAULT_FILE_IMPORTED'
+    | 'VAULT_FILE_DELETED'
+    | 'SENSITIVE_SETTING_CHANGED'
+    | 'LOGS_CLEARED'
     | 'SESSION_LOCKED'
+    | 'SESSION_EXPIRED'
     | 'KEYSTORE_RECOVERY'
     | 'ONBOARDING_COMPLETED';
   packageName: string | null;
+  authenticationMethod?: 'MASTER_PIN' | 'BIOMETRIC_PROMPT' | null;
+  severity?: SecurityEventSeverity;
+  metadata?: string;
   title: string;
   detail: string;
   timestampMillis: number;

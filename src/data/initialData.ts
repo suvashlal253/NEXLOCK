@@ -474,6 +474,15 @@ export const INITIAL_APPS_CATALOG = INITIAL_DISCOVERED_PACKAGES;
 
 export const INITIAL_SECURITY_EVENTS: SecurityEventEntity[] = [
   {
+    id: 'evt-p6-init',
+    eventType: 'CONFIG_LOCK_ENABLED',
+    packageName: null,
+    title: 'Phase 6 Smart Automation, Encrypted Backup & Production Engine Active',
+    detail:
+      'LockScheduleManager (cross-midnight schedules), 4 Lock Modes, PBKDF2 + AES-256-GCM Backup/Restore, 7D/30D Security Analytics, and English/বাংলা localization online.',
+    timestampMillis: Date.now() - 1000 * 10,
+  },
+  {
     id: 'evt-p4-init',
     eventType: 'PHASE3_DISCOVERY',
     packageName: null,
@@ -547,6 +556,17 @@ export const DOCUMENTED_PERMISSIONS: PermissionExplanation[] = [
     targetPhase: 'Phase 4 — Active',
     statusLabel: 'Implemented in Phase 4',
   },
+  {
+    id: 'camera_intruder',
+    title: 'Optional Front Camera (CAMERA)',
+    androidConstant: 'android.permission.CAMERA',
+    whyNeeded:
+      'Optional in Phase 5: Requested only when Intruder Selfie is explicitly consented and enabled to capture a front-camera frame after reaching the configured failed PIN threshold.',
+    osLimitationNote:
+      'Modern Android restricts camera activation when an app is in the background. If no foreground Activity lifecycle is active, NEXLOCK records the intruder event without taking a photo.',
+    targetPhase: 'Phase 5 — Active',
+    statusLabel: 'Optional Consented in Phase 5',
+  },
 ];
 
 export const DEVELOPMENT_PHASES = [
@@ -574,15 +594,23 @@ export const DEVELOPMENT_PHASES = [
   {
     phase: 'Phase 4',
     title: 'UsageStatsManager Monitoring & Real App Lock Engine',
-    status: 'Active & Complete',
+    status: 'Complete',
     summary:
       'AppLockMonitoringService (ForegroundService specialUse), ForegroundAppDetector, AppLockEngine state machine, AppLockActivity challenge screen, 6 re-lock timer options, and safe recovery exclusions.',
   },
   {
     phase: 'Phase 5',
-    title: 'Encrypted Private Vault & Advanced Audit Logs',
-    status: 'Upcoming — Phase 5',
+    title: 'Intruder Detection, Consented Selfie, Quick Lock, Tamper Health & Privacy Vault',
+    status: 'Complete',
     summary:
-      'Jetpack Security EncryptedFile (AES256_GCM_HKDF_4KB) media isolation and tamper-evident local security event history.',
+      'IntruderDetectionManager (3/5/10 thresholds), CameraX consented front selfie encrypted via AES-256-GCM, NotificationDeduplicator, Quick Lock / Panic Lock, Secure Settings authorization gate, Room v3 MIGRATION_2_3, and AES-256-GCM SecureFileRepository.',
+  },
+  {
+    phase: 'Phase 6',
+    title: 'Smart Automation, Encrypted Backup, Analytics, Personalization & Production Release',
+    status: 'Active & Production Ready',
+    summary:
+      'LockScheduleManager (cross-midnight schedules + inexact AlarmManager window), 4 Lock Modes, PBKDF2 + AES-256-GCM Encrypted Backup & Restore, 7D/30D Security Analytics, Lock Screen Personalization, English/বাংলা localization, Room v4 MIGRATION_3_4, and 67 automated unit tests.',
   },
 ];
+

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NEXLOCK</string>
+    <string name="app_tagline">আপনার অ্যাপস। আপনার গোপনীয়তা। আপনার নিয়ন্ত্রণ।</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">হোম</string>
+    <string name="nav_apps">অ্যাপস</string>
+    <string name="nav_schedules">শিডিউল</string>
+    <string name="nav_vault">ভল্ট</string>
+    <string name="nav_settings">সেটিংস</string>
+
+    <!-- Protection Status & Lock Modes -->
+    <string name="protection_active">সুরক্ষা সক্রিয়</string>
+    <string name="protection_degraded">অনুমতি প্রয়োজন</string>
+    <string name="lock_mode_normal">সাধারণ সুরক্ষা (Normal)</string>
+    <string name="lock_mode_max_security">সর্বোচ্চ নিরাপত্তা (Maximum Security)</string>
+    <string name="lock_mode_night">নাইট মোড (Night Mode)</string>
+    <string name="lock_mode_custom">কাস্টম শিডিউল (Custom Rules)</string>
+
+    <!-- Smart Lock Scheduler -->
+    <string name="schedules_title">স্মার্ট লক শিডিউলার</string>
+    <string name="schedules_subtitle">অফিস সময়, রাত এবং সাপ্তাহিক ছুটির জন্য স্বয়ংক্রিয় অ্যাপ লক সময়সূচী।</string>
+    <string name="schedule_overnight_badge">রাতব্যাপী (মধ্যরাত অতিক্রম করে)</string>
+    <string name="schedule_add_new">নতুন শিডিউল তৈরি করুন</string>
+
+    <!-- Encrypted Backup & Restore -->
+    <string name="backup_title">এনক্রিপ্টেড ব্যাকআপ এবং রিস্টোর</string>
+    <string name="backup_subtitle">PBKDF2-HMAC-SHA256 এবং AES-256-GCM এনক্রিপশনসহ আপনার কনফিগারেশন সংরক্ষণ করুন।</string>
+    <string name="backup_security_notice">মাস্টার পিন, ক্রিপ্টোগ্রাফিক কী এবং বায়োমেট্রিক তথ্য কখনোই ব্যাকআপে রাখা হয় না।</string>
+    <string name="backup_export_btn">এনক্রিপ্টেড ব্যাকআপ এক্সপোর্ট করুন</string>
+    <string name="backup_restore_btn">ব্যাকআপ যাচাই ও রিস্টোর করুন</string>
+
+    <!-- Security Analytics -->
+    <string name="analytics_title">নিরাপত্তা বিশ্লেষণ (Analytics)</string>
+    <string name="analytics_7d">গত ৭ দিন</string>
+    <string name="analytics_30d">গত ৩০ দিন</string>
+
+    <!-- Help & Support -->
+    <string name="help_center_title">সহায়তা কেন্দ্র ও সমস্যা সমাধান</string>
+    <string name="privacy_policy_title">গোপনীয়তা নীতি ও নিরাপত্তা</string>
+</resources>

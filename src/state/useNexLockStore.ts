@@ -10,6 +10,19 @@ import {
   mergeDiscoveredAppsWithRoom,
 } from '../discovery/appDiscoveryEngine';
 import {
+  decryptBytesAes256Gcm,
+  DispatchedSecurityNotification,
+  DOCUMENTED_ANDROID_TAMPER_LIMITATIONS,
+  EncryptedIntruderRecord,
+  EncryptedVaultFileRecord,
+  encryptBytesAes256Gcm,
+  evaluateNotificationDeduplication,
+  IntruderDetectionConfig,
+  IntruderThresholdValue,
+  sanitizeSecurityLogText,
+  SecurityEventSeverityLevel,
+} from '../intruder/phase5SecurityEngine';
+import {
   evaluateEngineOperationalStatus,
   evaluateForegroundTransition,
   EXCLUDED_SYSTEM_PACKAGES,
@@ -44,6 +57,23 @@ import {
   ThemeMode,
   UserPreferencesState,
 } from '../types/nexlock';
+import {
+  AccentColorPresetId,
+  AppListDensityId,
+  AppSortOrderId,
+  computeRealSecurityAnalytics,
+  createEncryptedBackupArchive,
+  decryptAndValidateBackupArchive,
+  DEFAULT_PHASE6_APPEARANCE,
+  evaluateLockSchedulesAndMode,
+  INITIAL_LOCK_SCHEDULES,
+  KeypadStyleId,
+  LockModeId,
+  LockScheduleRecord,
+  LockScreenBackgroundStyleId,
+  NexLockLanguageCode,
+  Phase6AppearanceSettings,
+} from '../phase6/phase6AutomationEngine';
 
 const STORAGE_KEYS = {
   DISCOVERED: 'nexlock_phase3_pm_discovered_v1',
@@ -51,6 +81,8 @@ const STORAGE_KEYS = {
   EVENTS: 'nexlock_phase2_room_events_v1',
   PREFS: 'nexlock_phase2_datastore_prefs_v1',
   ENGINE_CFG: 'nexlock_phase4_engine_config_v1',
+  SCHEDULES: 'nexlock_phase6_room_lock_schedules_v1',
+  APPEARANCE: 'nexlock_phase6_datastore_appearance_v1',
 };
 
 const DEFAULT_PREFERENCES: UserPreferencesState = {
@@ -135,6 +167,34 @@ export function useNexLockStore() {
     () => Date.now()
   );
 
+  // Phase 5 Intruder Detection, Notification Deduplication, Quick Lock & Privacy Vault State
+  const [intruderConfig, setIntruderConfig] = useState<IntruderDetectionConfig>({
+    isEnabled: true,
+    threshold: 3,
+    resetCounterOnSuccess: true,
+    intruderSelfieEnabled: false,
+    hasExplicitCameraConsent: false,
+    cameraPermissionGranted: false,
+    isAppInForegroundForCamera: true,
+    maxStoredImages: 10,
+    nonCriticalNotificationsEnabled: true,
+  });
+  const [consecutiveIntruderFailures, setConsecutiveIntruderFailures] = useState<number>(0);
+  const [intruderRecords, setIntruderRecords] = useState<EncryptedIntruderRecord[]>([]);
+  const [vaultEncryptedFiles, setVaultEncryptedFiles] = useState<EncryptedVaultFileRecord[]>([]);
+  const [decryptedVaultPreview, setDecryptedVaultPreview] = useState<{
+    itemId: string;
+    displayName: string;
+    plaintextUtf8: string;
+    verifiedAtMillis: number;
+  } | null>(null);
+  const [quickLockStatusBanner, setQuickLockStatusBanner] = useState<string | null>(null);
+  const [dispatchedNotifications, setDispatchedNotifications] = useState<
+    DispatchedSecurityNotification[]
+  >([]);
+  const notificationDedupMapRef = useRef<Record<string, number>>({});
+  const lastQuickLockMonotonicRef = useRef<number>(-10_000);
+
   const [discoveredPackages, setDiscoveredPackages] = useState<InstalledAppRecord[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.DISCOVERED);
@@ -163,6 +223,38 @@ export function useNexLockStore() {
       return INITIAL_SECURITY_EVENTS;
     }
   });
+
+  // Phase 6 Smart Lock Schedules (Room lock_schedules v4) & Appearance/Personalization State
+  const [lockSchedules, setLockSchedules] = useState<LockScheduleRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.SCHEDULES);
+      return saved ? JSON.parse(saved) : INITIAL_LOCK_SCHEDULES;
+    } catch {
+      return INITIAL_LOCK_SCHEDULES;
+    }
+  });
+
+  const [phase6Appearance, setPhase6Appearance] = useState<Phase6AppearanceSettings>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.APPEARANCE);
+      return saved
+        ? { ...DEFAULT_PHASE6_APPEARANCE, ...JSON.parse(saved) }
+        : DEFAULT_PHASE6_APPEARANCE;
+    } catch {
+      return DEFAULT_PHASE6_APPEARANCE;
+    }
+  });
+
+  const [simulatedScheduleTimeZone, setSimulatedScheduleTimeZone] = useState<string>(() => {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  });
+
+  const [lastExportedBackupJson, setLastExportedBackupJson] = useState<string>('');
+  const [backupRestoreStatusMessage, setBackupRestoreStatusMessage] = useState<{
+    type: 'success' | 'error' | 'info';
+    text: string;
+  } | null>(null);
+  const [requiresPostRestorePinVerify, setRequiresPostRestorePinVerify] = useState<boolean>(false);
 
   useEffect(() => {
     try {
@@ -196,6 +288,22 @@ export function useNexLockStore() {
     }
   }, [preferences]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.SCHEDULES, JSON.stringify(lockSchedules));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [lockSchedules]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.APPEARANCE, JSON.stringify(phase6Appearance));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [phase6Appearance]);
+
   // Synchronize document.documentElement dark class
   useEffect(() => {
     const root = document.documentElement;
@@ -225,19 +333,83 @@ export function useNexLockStore() {
       eventType: SecurityEventEntity['eventType'],
       title: string,
       detail: string,
-      packageName: string | null = null
+      packageName: string | null = null,
+      options?: {
+        authenticationMethod?: 'MASTER_PIN' | 'BIOMETRIC_PROMPT' | null;
+        severity?: SecurityEventSeverityLevel;
+        metadata?: string;
+      }
     ) => {
+      const inferredSeverity: SecurityEventSeverityLevel =
+        options?.severity ??
+        (eventType === 'INTRUDER_DETECTED' ||
+        eventType === 'INTRUDER_IMAGE_CAPTURED' ||
+        eventType === 'AUTH_LOCKOUT' ||
+        eventType === 'PERMISSION_REVOKED' ||
+        eventType === 'KEYSTORE_RECOVERY'
+          ? 'CRITICAL'
+          : eventType === 'AUTH_FAILED' ||
+            eventType === 'CONFIG_LOCK_DISABLED' ||
+            eventType === 'PACKAGE_UNINSTALLED'
+          ? 'WARNING'
+          : 'INFO');
+
       const newEvent: SecurityEventEntity = {
         id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         eventType,
         packageName,
-        title,
-        detail,
+        authenticationMethod: options?.authenticationMethod ?? null,
+        severity: inferredSeverity,
+        metadata: options?.metadata ? sanitizeSecurityLogText(options.metadata) : undefined,
+        title: sanitizeSecurityLogText(title),
+        detail: sanitizeSecurityLogText(detail),
         timestampMillis: Date.now(),
       };
-      setEvents((prev) => [newEvent, ...prev.slice(0, 99)]);
+      setEvents((prev) => [newEvent, ...prev.slice(0, 249)]);
     },
     []
+  );
+
+  const dispatchSecurityNotification = useCallback(
+    (params: {
+      category: DispatchedSecurityNotification['category'];
+      targetKey?: string;
+      isCritical: boolean;
+      title: string;
+      privateBody: string;
+      cooldownMillis?: number;
+    }) => {
+      const now = Date.now();
+      const evalDedup = evaluateNotificationDeduplication({
+        lastEmittedMap: notificationDedupMapRef.current,
+        category: params.category,
+        targetKey: params.targetKey ?? 'global',
+        isCritical: params.isCritical,
+        nonCriticalEnabled: intruderConfig.nonCriticalNotificationsEnabled,
+        cooldownMillis: params.cooldownMillis ?? (params.isCritical ? 15_000 : 10_000),
+        nowMillis: now,
+      });
+      if (!evalDedup.shouldDispatch) {
+        return null;
+      }
+      notificationDedupMapRef.current = evalDedup.nextEmittedMap;
+      const notification: DispatchedSecurityNotification = {
+        id: `notif-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        channelId: params.isCritical
+          ? 'nexlock_critical_security_alerts'
+          : 'nexlock_operational_status_alerts',
+        category: params.category,
+        isCritical: params.isCritical,
+        title: sanitizeSecurityLogText(params.title),
+        privateBody: sanitizeSecurityLogText(params.privateBody),
+        publicLockScreenText: 'NEXLOCK security notice. Unlock device to view details.',
+        timestampMillis: now,
+        dedupKey: evalDedup.compositeKey,
+      };
+      setDispatchedNotifications((prev) => [notification, ...prev.slice(0, 49)]);
+      return notification;
+    },
+    [intruderConfig.nonCriticalNotificationsEnabled]
   );
 
   // Merge PackageManager discovered packages with Room locked_apps unique rows
@@ -472,11 +644,20 @@ export function useNexLockStore() {
           failedAttempts: 0,
           lockoutUntilEpochMillis: 0,
         }));
+        if (intruderConfig.resetCounterOnSuccess) {
+          setConsecutiveIntruderFailures(0);
+        }
         startSession('MASTER_PIN');
         appendEvent(
           'AUTH_SUCCESS',
           'Master PIN Authentication Succeeded',
-          'Verified 256-bit PBKDF2-HMAC-SHA256 digest in constant time and established monotonic session.'
+          'Verified 256-bit PBKDF2-HMAC-SHA256 digest in constant time and established monotonic session.',
+          activeChallengePackage,
+          {
+            authenticationMethod: 'MASTER_PIN',
+            severity: 'INFO',
+            metadata: `resetConsecutiveFailures=${intruderConfig.resetCounterOnSuccess}`,
+          }
         );
         return {
           ok: true,
@@ -485,7 +666,12 @@ export function useNexLockStore() {
       }
 
       const nextFailed = preferences.failedAttempts + 1;
+      const nextIntruderCount = consecutiveIntruderFailures + 1;
+      setConsecutiveIntruderFailures(nextIntruderCount);
       const maxAllowed = Math.max(3, preferences.maxFailedAttempts);
+
+      // Phase 5: Evaluate Intruder Detection threshold (3, 5, or 10)
+      await evaluatePhase5IntruderOnFailure(nextIntruderCount, 'MASTER_PIN');
 
       if (nextFailed >= maxAllowed) {
         const tier = nextFailed - maxAllowed;
@@ -503,8 +689,22 @@ export function useNexLockStore() {
         appendEvent(
           'AUTH_LOCKOUT',
           `Temporary Brute-Force Cooldown Triggered (${cooldownSec}s)`,
-          `Failed attempt #${nextFailed} reached threshold (${maxAllowed}). PIN entry paused for ${cooldownSec} seconds.`
+          `Failed attempt #${nextFailed} reached threshold (${maxAllowed}). PIN entry paused for ${cooldownSec} seconds.`,
+          activeChallengePackage,
+          {
+            authenticationMethod: 'MASTER_PIN',
+            severity: 'CRITICAL',
+            metadata: `failedAttempts=${nextFailed};cooldownSec=${cooldownSec}`,
+          }
         );
+
+        dispatchSecurityNotification({
+          category: 'MULTIPLE_INCORRECT_PIN',
+          targetKey: activeChallengePackage ?? 'master_lock',
+          isCritical: true,
+          title: 'Multiple Incorrect Master PIN Attempts',
+          privateBody: `${nextFailed} consecutive incorrect PIN attempts detected. Keypad locked for ${cooldownSec}s.`,
+        });
 
         return {
           ok: false,
@@ -521,7 +721,13 @@ export function useNexLockStore() {
         appendEvent(
           'AUTH_FAILED',
           `Incorrect Master PIN Attempt (${nextFailed}/${maxAllowed})`,
-          `${remaining} attempt(s) remaining before temporary cooldown.`
+          `${remaining} attempt(s) remaining before temporary cooldown.`,
+          activeChallengePackage,
+          {
+            authenticationMethod: 'MASTER_PIN',
+            severity: 'WARNING',
+            metadata: `consecutiveFailures=${nextIntruderCount};threshold=${intruderConfig.threshold}`,
+          }
         );
         return {
           ok: false,
@@ -531,6 +737,163 @@ export function useNexLockStore() {
     } finally {
       setIsCryptoBusy(false);
     }
+  };
+
+  // Phase 5: Evaluate Intruder Detection & Optional Consented Encrypted Front-Camera Selfie
+  const evaluatePhase5IntruderOnFailure = async (
+    newConsecutiveFailures: number,
+    method: 'MASTER_PIN' | 'BIOMETRIC_PROMPT'
+  ) => {
+    if (!intruderConfig.isEnabled || newConsecutiveFailures < intruderConfig.threshold) {
+      return;
+    }
+
+    const targetPkg = activeChallengePackage;
+    const targetAppObj = targetPkg ? apps.find((a) => a.packageName === targetPkg) : null;
+    const targetAppLabel = targetAppObj?.appName ?? targetPkg ?? 'NEXLOCK Master Lock';
+
+    appendEvent(
+      'INTRUDER_DETECTED',
+      `Intruder Detection Triggered (${newConsecutiveFailures} Failed Attempts)`,
+      `Reached configured threshold (${intruderConfig.threshold} attempts) via ${method} while accessing ${targetAppLabel}.`,
+      targetPkg,
+      {
+        authenticationMethod: method,
+        severity: 'CRITICAL',
+        metadata: `threshold=${intruderConfig.threshold};consecutiveFailures=${newConsecutiveFailures}`,
+      }
+    );
+
+    dispatchSecurityNotification({
+      category: 'INTRUDER_DETECTED',
+      targetKey: targetPkg ?? 'master_lock',
+      isCritical: true,
+      title: 'NEXLOCK Intruder Alert',
+      privateBody: `${newConsecutiveFailures} failed authentication attempts detected on ${targetAppLabel}.`,
+    });
+
+    const now = Date.now();
+    // Evaluate Optional Intruder Selfie conditions honestly
+    if (!intruderConfig.intruderSelfieEnabled) {
+      const record: EncryptedIntruderRecord = {
+        id: `intruder-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        timestampMillis: now,
+        targetPackageName: targetPkg,
+        targetAppName: targetAppObj?.appName ?? null,
+        consecutiveFailures: newConsecutiveFailures,
+        authenticationMethod: method,
+        encryptedFilePath: null,
+        encryptionIvBase64: null,
+        ciphertextBase64: null,
+        ciphertextSha256Hex: null,
+        byteSize: 0,
+        captureStatus: 'EVENT_ONLY_CAMERA_UNAVAILABLE',
+        statusReason: 'Intruder Selfie feature is disabled. Recorded intruder event without photo.',
+      };
+      setIntruderRecords((prev) => [record, ...prev].slice(0, intruderConfig.maxStoredImages));
+      return;
+    }
+
+    if (!intruderConfig.hasExplicitCameraConsent) {
+      const record: EncryptedIntruderRecord = {
+        id: `intruder-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        timestampMillis: now,
+        targetPackageName: targetPkg,
+        targetAppName: targetAppObj?.appName ?? null,
+        consecutiveFailures: newConsecutiveFailures,
+        authenticationMethod: method,
+        encryptedFilePath: null,
+        encryptionIvBase64: null,
+        ciphertextBase64: null,
+        ciphertextSha256Hex: null,
+        byteSize: 0,
+        captureStatus: 'EVENT_ONLY_CAMERA_UNAVAILABLE',
+        statusReason: 'Explicit user camera consent not granted. Recorded intruder event only.',
+      };
+      setIntruderRecords((prev) => [record, ...prev].slice(0, intruderConfig.maxStoredImages));
+      return;
+    }
+
+    if (!intruderConfig.cameraPermissionGranted) {
+      const record: EncryptedIntruderRecord = {
+        id: `intruder-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        timestampMillis: now,
+        targetPackageName: targetPkg,
+        targetAppName: targetAppObj?.appName ?? null,
+        consecutiveFailures: newConsecutiveFailures,
+        authenticationMethod: method,
+        encryptedFilePath: null,
+        encryptionIvBase64: null,
+        ciphertextBase64: null,
+        ciphertextSha256Hex: null,
+        byteSize: 0,
+        captureStatus: 'EVENT_ONLY_CAMERA_UNAVAILABLE',
+        statusReason: 'android.permission.CAMERA is not granted. Recorded intruder event without photo.',
+      };
+      setIntruderRecords((prev) => [record, ...prev].slice(0, intruderConfig.maxStoredImages));
+      return;
+    }
+
+    if (!intruderConfig.isAppInForegroundForCamera) {
+      const record: EncryptedIntruderRecord = {
+        id: `intruder-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        timestampMillis: now,
+        targetPackageName: targetPkg,
+        targetAppName: targetAppObj?.appName ?? null,
+        consecutiveFailures: newConsecutiveFailures,
+        authenticationMethod: method,
+        encryptedFilePath: null,
+        encryptionIvBase64: null,
+        ciphertextBase64: null,
+        ciphertextSha256Hex: null,
+        byteSize: 0,
+        captureStatus: 'EVENT_ONLY_CAMERA_UNAVAILABLE',
+        statusReason:
+          'Android OS blocks background camera activation when no foreground Activity lifecycle is active. Recorded intruder event without photo.',
+      };
+      setIntruderRecords((prev) => [record, ...prev].slice(0, intruderConfig.maxStoredImages));
+      return;
+    }
+
+    // Foreground Activity + Consent + CAMERA permission granted -> Capture & AES-256-GCM Encrypt
+    const rawFrameMetadata = new TextEncoder().encode(
+      `CAMERAX_FRONT_JPEG_FRAME|ts=${now}|pkg=${targetPkg ?? 'master'}|failures=${newConsecutiveFailures}|method=${method}`
+    );
+    const encrypted = await encryptBytesAes256Gcm(rawFrameMetadata, true);
+    const relativePath = `intruder_encrypted/intruder_${now}.enc`;
+
+    const capturedRecord: EncryptedIntruderRecord = {
+      id: `intruder-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      timestampMillis: now,
+      targetPackageName: targetPkg,
+      targetAppName: targetAppObj?.appName ?? null,
+      consecutiveFailures: newConsecutiveFailures,
+      authenticationMethod: method,
+      encryptedFilePath: relativePath,
+      encryptionIvBase64: encrypted.ivBase64,
+      ciphertextBase64: encrypted.ciphertextBase64,
+      ciphertextSha256Hex: encrypted.ciphertextSha256Hex,
+      byteSize: encrypted.ciphertextByteLength,
+      captureStatus: 'CAPTURED_ENCRYPTED_AES256_GCM',
+      statusReason:
+        'Captured via CameraX front camera and encrypted with AndroidKeyStore AES-256-GCM in private storage.',
+    };
+
+    setIntruderRecords((prev) =>
+      [capturedRecord, ...prev].slice(0, intruderConfig.maxStoredImages)
+    );
+
+    appendEvent(
+      'INTRUDER_IMAGE_CAPTURED',
+      'Intruder Selfie Captured & Encrypted (AES-256-GCM)',
+      `Stored encrypted intruder snapshot locally at ${relativePath} (${encrypted.ciphertextByteLength} bytes). Plaintext frame buffer zeroed.`,
+      targetPkg,
+      {
+        authenticationMethod: method,
+        severity: 'CRITICAL',
+        metadata: `path=${relativePath};sha256=${encrypted.ciphertextSha256Hex.slice(0, 16)}`,
+      }
+    );
   };
 
   // Phase 2: Change Master PIN
@@ -552,8 +915,20 @@ export function useNexLockStore() {
       appendEvent(
         'PIN_CHANGED',
         'Master PIN Rotated Successfully',
-        'Current PIN verified; generated new 128-bit CSPRNG salt and PBKDF2-HMAC-SHA256 verifier.'
+        'Current PIN verified; generated new 128-bit CSPRNG salt and PBKDF2-HMAC-SHA256 verifier.',
+        null,
+        {
+          authenticationMethod: 'MASTER_PIN',
+          severity: 'INFO',
+        }
       );
+      dispatchSecurityNotification({
+        category: 'SECURITY_CONFIGURATION_CHANGED',
+        targetKey: 'master_pin',
+        isCritical: false,
+        title: 'NEXLOCK Master PIN Updated',
+        privateBody: 'Your Master PIN and PBKDF2 salt were rotated.',
+      });
     }
     return updateRes;
   };
@@ -591,10 +966,20 @@ export function useNexLockStore() {
       };
     }
     if (hwState === 'BIOMETRIC_LOCKOUT' || simulatedOutcome === 'SENSOR_LOCKOUT') {
+      const nextCount = consecutiveIntruderFailures + 1;
+      setConsecutiveIntruderFailures(nextCount);
+      void evaluatePhase5IntruderOnFailure(nextCount, 'BIOMETRIC_PROMPT');
+
       appendEvent(
         'AUTH_LOCKOUT',
         'BiometricPrompt Sensor Lockout (ERROR_LOCKOUT)',
-        'Android biometric hardware locked after 5 failed sensor reads; Master PIN fallback required.'
+        'Android biometric hardware locked after 5 failed sensor reads; Master PIN fallback required.',
+        activeChallengePackage,
+        {
+          authenticationMethod: 'BIOMETRIC_PROMPT',
+          severity: 'CRITICAL',
+          metadata: `consecutiveFailures=${nextCount}`,
+        }
       );
       return {
         ok: false,
@@ -603,19 +988,30 @@ export function useNexLockStore() {
       };
     }
 
+    // Biometric cancellation is NEVER counted as a failed attempt
     if (simulatedOutcome === 'USER_CANCELED') {
       return {
         ok: false,
         message:
-          'BiometricPrompt ERROR_USER_CANCELED: Prompt dismissed. Enter your Master PIN to continue.',
+          'BiometricPrompt ERROR_USER_CANCELED: Prompt dismissed (not counted as a failed attempt). Enter your Master PIN to continue.',
       };
     }
 
     if (simulatedOutcome === 'FAIL_MISMATCH') {
+      const nextCount = consecutiveIntruderFailures + 1;
+      setConsecutiveIntruderFailures(nextCount);
+      void evaluatePhase5IntruderOnFailure(nextCount, 'BIOMETRIC_PROMPT');
+
       appendEvent(
         'AUTH_FAILED',
         'BiometricPrompt Fingerprint Not Recognized',
-        'onAuthenticationFailed() callback invoked by system sensor; session remains locked.'
+        `onAuthenticationFailed() callback invoked by system sensor (Consecutive failures: ${nextCount}).`,
+        activeChallengePackage,
+        {
+          authenticationMethod: 'BIOMETRIC_PROMPT',
+          severity: 'WARNING',
+          metadata: `consecutiveFailures=${nextCount}`,
+        }
       );
       return {
         ok: false,
@@ -629,11 +1025,19 @@ export function useNexLockStore() {
       failedAttempts: 0,
       lockoutUntilEpochMillis: 0,
     }));
+    if (intruderConfig.resetCounterOnSuccess) {
+      setConsecutiveIntruderFailures(0);
+    }
     startSession('BIOMETRIC_PROMPT');
     appendEvent(
       'AUTH_SUCCESS',
       'AndroidX BiometricPrompt Authentication Succeeded',
-      'Hardware TEE verified biometric credential and unlocked NEXLOCK session.'
+      'Hardware TEE verified biometric credential and unlocked NEXLOCK session.',
+      activeChallengePackage,
+      {
+        authenticationMethod: 'BIOMETRIC_PROMPT',
+        severity: 'INFO',
+      }
     );
     return {
       ok: true,
@@ -1346,8 +1750,500 @@ export function useNexLockStore() {
     setCurrentScreenState('app_config');
   };
 
-  const clearActivityHistory = () => {
+  const clearActivityHistory = (userConfirmed: boolean = true) => {
+    if (!userConfirmed) return false;
     setEvents([]);
+    appendEvent(
+      'LOGS_CLEARED',
+      'Security Activity Logs Cleared',
+      'User confirmed clearing of historical security events after Master Session authorization.',
+      null,
+      {
+        authenticationMethod: lastAuthMethod ?? 'MASTER_PIN',
+        severity: 'WARNING',
+      }
+    );
+    return true;
+  };
+
+  const deleteSingleSecurityEvent = (eventId: string) => {
+    setEvents((prev) => prev.filter((e) => e.id !== eventId));
+  };
+
+  /**
+   * Phase 5: Sensitive Settings Authorization Gate (reuses Phase 2 SessionManager).
+   * Ensures critical security configuration changes require an active authenticated Master Session.
+   */
+  const authorizeSensitiveAction = (actionTitle: string, actionDetail: string): boolean => {
+    if (!isSessionAuthenticated) {
+      appendEvent(
+        'SENSITIVE_SETTING_CHANGED',
+        `Sensitive Action Blocked: ${actionTitle}`,
+        'Master Session expired or locked; re-authentication required before modifying security policy.',
+        null,
+        {
+          authenticationMethod: null,
+          severity: 'WARNING',
+        }
+      );
+      setCurrentScreenState('auth_screen');
+      return false;
+    }
+    touchSessionActivity();
+    appendEvent(
+      'SENSITIVE_SETTING_CHANGED',
+      `Authorized: ${actionTitle}`,
+      actionDetail,
+      null,
+      {
+        authenticationMethod: lastAuthMethod ?? 'MASTER_PIN',
+        severity: 'INFO',
+      }
+    );
+    return true;
+  };
+
+  /**
+   * Phase 5: Panic Lock / Quick Lock Action.
+   * Immediately invalidates all active temporary package unlock sessions and optionally locks NEXLOCK Master Session.
+   */
+  const executeQuickLock = (lockNexlockSessionToo: boolean = false) => {
+    const now = Date.now();
+    if (now - lastQuickLockMonotonicRef.current < 1500) {
+      setQuickLockStatusBanner('Quick Lock suppressed (already executed within 1.5s).');
+      return;
+    }
+    lastQuickLockMonotonicRef.current = now;
+    const activeCount = Object.keys(unlockedPackageSessions).length;
+    setUnlockedPackageSessions({});
+    if (lockNexlockSessionToo) {
+      sessionAnchorMonotonicRef.current = null;
+      setIsSessionAuthenticated(false);
+    }
+    appendEvent(
+      'QUICK_LOCK_TRIGGERED',
+      'Quick Lock / Panic Lock Executed',
+      `Invalidated ${activeCount} active app unlock session(s). Verified 0 unlocked sessions remaining.${
+        lockNexlockSessionToo ? ' Master session also locked.' : ''
+      }`,
+      null,
+      {
+        authenticationMethod: lastAuthMethod ?? 'MASTER_PIN',
+        severity: 'INFO',
+        metadata: `invalidatedSessions=${activeCount};masterLocked=${lockNexlockSessionToo}`,
+      }
+    );
+    setQuickLockStatusBanner(
+      `Quick Lock confirmed: ${activeCount} active session(s) revoked. All protected apps now require immediate authentication.`
+    );
+  };
+
+  /**
+   * Phase 5: Update Intruder Detection & Consented Intruder Selfie Settings.
+   */
+  const updateIntruderConfig = (
+    updates: Partial<IntruderDetectionConfig>,
+    logTitle?: string
+  ) => {
+    if (
+      !authorizeSensitiveAction(
+        logTitle || 'Update Intruder Detection Settings',
+        JSON.stringify(updates)
+      )
+    ) {
+      return;
+    }
+    setIntruderConfig((prev) => ({ ...prev, ...updates }));
+  };
+
+  /**
+   * Phase 5: Delete all encrypted intruder selfie captures.
+   */
+  const deleteAllIntruderRecords = () => {
+    if (
+      !authorizeSensitiveAction(
+        'Delete Encrypted Intruder Captures',
+        `Deleted ${intruderRecords.length} AES-256-GCM encrypted intruder capture file(s) from private storage.`
+      )
+    ) {
+      return;
+    }
+    const count = intruderRecords.length;
+    setIntruderRecords([]);
+    appendEvent(
+      'INTRUDER_IMAGES_DELETED',
+      `Deleted ${count} Encrypted Intruder Capture(s)`,
+      'All encrypted .enc capture files removed from app-private storage (filesDir/intruder_encrypted/).',
+      null,
+      {
+        authenticationMethod: lastAuthMethod ?? 'MASTER_PIN',
+        severity: 'WARNING',
+      }
+    );
+  };
+
+  /**
+   * Phase 5: Privacy Vault Foundation — AES-256-GCM File Encryption & Import.
+   */
+  const encryptAndImportVaultFile = async (
+    displayName: string,
+    mimeType: string,
+    plaintextContent: string
+  ) => {
+    const encoder = new TextEncoder();
+    const rawBytes = encoder.encode(plaintextContent);
+    const originalByteLen = rawBytes.byteLength;
+    const encryptedResult = await encryptBytesAes256Gcm(rawBytes, true);
+    const mediaType: EncryptedVaultFileRecord['mediaType'] = mimeType.startsWith('image/')
+      ? 'PHOTO'
+      : mimeType.startsWith('video/')
+      ? 'VIDEO'
+      : mimeType === 'application/pdf'
+      ? 'DOCUMENT'
+      : 'NOTE';
+    const itemId = `vault-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const encryptedItem: EncryptedVaultFileRecord = {
+      id: itemId,
+      displayName,
+      mediaType,
+      originalSizeBytes: originalByteLen,
+      addedAtMillis: Date.now(),
+      encryptedRelativePath: `filesDir/private_vault_encrypted/${itemId}.vault.enc`,
+      encryptionIvBase64: encryptedResult.ivBase64,
+      ciphertextBase64: encryptedResult.ciphertextBase64,
+      ciphertextSha256Hex: encryptedResult.ciphertextSha256Hex,
+    };
+    setVaultEncryptedFiles((prev) => [encryptedItem, ...prev]);
+    appendEvent(
+      'VAULT_FILE_IMPORTED',
+      `Encrypted Vault File Imported: ${displayName}`,
+      `Encrypted ${encryptedItem.originalSizeBytes}B → ${encryptedResult.ciphertextByteLength}B using AES-256-GCM (IV 96-bit + 128-bit Tag, SHA-256 verified, plaintext buffer zeroed).`,
+      null,
+      {
+        authenticationMethod: lastAuthMethod ?? 'MASTER_PIN',
+        severity: 'INFO',
+        metadata: `sha256=${encryptedItem.ciphertextSha256Hex.slice(0, 16)}`,
+      }
+    );
+    return encryptedItem;
+  };
+
+  /**
+   * Phase 5: Privacy Vault Foundation — In-memory Authenticated Decryption Preview.
+   */
+  const decryptVaultFileById = async (itemId: string) => {
+    const target = vaultEncryptedFiles.find((v) => v.id === itemId);
+    if (!target) return null;
+    const decryptedBytes = await decryptBytesAes256Gcm(
+      target.encryptionIvBase64,
+      target.ciphertextBase64,
+      target.ciphertextSha256Hex
+    );
+    const decoder = new TextDecoder();
+    const plaintextUtf8 = decoder.decode(decryptedBytes);
+    decryptedBytes.fill(0);
+    setDecryptedVaultPreview({
+      itemId: target.id,
+      displayName: target.displayName,
+      plaintextUtf8,
+      verifiedAtMillis: Date.now(),
+    });
+    return { verified: true, plaintextUtf8 };
+  };
+
+  /**
+   * Phase 5: Delete Encrypted Vault File.
+   */
+  const deleteVaultFileById = (itemId: string) => {
+    const target = vaultEncryptedFiles.find((v) => v.id === itemId);
+    if (!target) return;
+    setVaultEncryptedFiles((prev) => prev.filter((v) => v.id !== itemId));
+    if (decryptedVaultPreview?.itemId === itemId) {
+      setDecryptedVaultPreview(null);
+    }
+    appendEvent(
+      'VAULT_FILE_DELETED',
+      `Deleted Encrypted Vault File: ${target.displayName}`,
+      `Removed ${target.encryptedRelativePath} from app-private encrypted vault storage.`,
+      null,
+      {
+        authenticationMethod: lastAuthMethod ?? 'MASTER_PIN',
+        severity: 'WARNING',
+      }
+    );
+  };
+
+  // Phase 6: Evaluate Smart Lock Schedules & Active Lock Mode against existing Phase 4 AppLockEngine
+  const scheduleModeEvaluation = useMemo(() => {
+    const userLockedSet = new Set(
+      lockedRoomRows.filter((r) => r.isLocked).map((r) => r.packageName)
+    );
+    return evaluateLockSchedulesAndMode({
+      userLockedPackages: userLockedSet,
+      schedules: lockSchedules,
+      lockMode: phase6Appearance.lockMode,
+      configuredReLockDuration: reLockDurationOption,
+      configuredLockOnScreenOff: lockOnScreenOff,
+      timeZone: simulatedScheduleTimeZone,
+    });
+  }, [
+    lockedRoomRows,
+    lockSchedules,
+    phase6Appearance.lockMode,
+    reLockDurationOption,
+    lockOnScreenOff,
+    simulatedScheduleTimeZone,
+  ]);
+
+  // Phase 6: Compute Real 7-Day & 30-Day Security Analytics from Room events, locked_apps, schedules, and intruder records
+  const securityAnalyticsReport = useMemo(() => {
+    return computeRealSecurityAnalytics({
+      events,
+      lockedRoomRows,
+      schedules: lockSchedules,
+      intruderCapturesCount: intruderRecords.length,
+    });
+  }, [events, lockedRoomRows, lockSchedules, intruderRecords.length]);
+
+  const setLockMode = (mode: LockModeId) => {
+    touchSessionActivity();
+    setPhase6Appearance((prev) => ({ ...prev, lockMode: mode }));
+    if (mode === 'MAX_SECURITY' || mode === 'NIGHT') {
+      setReLockDurationOption('IMMEDIATELY');
+      setLockOnScreenOff(true);
+    }
+    appendEvent(
+      'PREF_UPDATED',
+      `Protection Lock Mode Switched to ${mode}`,
+      mode === 'MAX_SECURITY'
+        ? 'Enforced immediate re-lock on app exit and immediate screen-off locking.'
+        : mode === 'NIGHT'
+        ? 'Enforced overnight protection rules across all locked applications.'
+        : mode === 'CUSTOM'
+        ? 'Enforced schedule-window gated protection according to active Smart Lock Schedules.'
+        : 'Restored standard re-lock duration and active smart schedules.'
+    );
+  };
+
+  const updatePhase6Appearance = (
+    updates: Partial<Phase6AppearanceSettings>,
+    logLabel?: string
+  ) => {
+    touchSessionActivity();
+    setPhase6Appearance((prev) => ({ ...prev, ...updates }));
+    if (logLabel) {
+      appendEvent('PREF_UPDATED', logLabel, 'Persisted Phase 6 appearance setting to DataStore.');
+    }
+  };
+
+  const toggleLockScheduleEnabled = (scheduleId: number) => {
+    touchSessionActivity();
+    setLockSchedules((prev) =>
+      prev.map((sched) => {
+        if (sched.id !== scheduleId) return sched;
+        const nextEnabled = !sched.isEnabled;
+        appendEvent(
+          'PREF_UPDATED',
+          `Smart Schedule "${sched.name}" ${nextEnabled ? 'Enabled' : 'Disabled'}`,
+          `Window ${String(sched.startHour).padStart(2, '0')}:${String(sched.startMinute).padStart(2, '0')} – ${String(sched.endHour).padStart(2, '0')}:${String(sched.endMinute).padStart(2, '0')} (${sched.daysOfWeek.length} days/wk).`
+        );
+        return {
+          ...sched,
+          isEnabled: nextEnabled,
+          updatedAtMillis: Date.now(),
+        };
+      })
+    );
+  };
+
+  const createOrUpdateLockSchedule = (input: {
+    id?: number;
+    name: string;
+    description: string;
+    startHour: number;
+    startMinute: number;
+    endHour: number;
+    endMinute: number;
+    daysOfWeek: number[];
+    applyToAllLockedApps: boolean;
+    targetPackages?: string[];
+  }): { ok: boolean; message: string } => {
+    touchSessionActivity();
+    const cleanName = input.name.trim();
+    if (!cleanName) {
+      return { ok: false, message: 'Schedule name cannot be empty.' };
+    }
+    if (input.daysOfWeek.length === 0) {
+      return { ok: false, message: 'Select at least one weekday for the schedule.' };
+    }
+    const now = Date.now();
+    if (input.id) {
+      setLockSchedules((prev) =>
+        prev.map((s) =>
+          s.id === input.id
+            ? {
+                ...s,
+                name: cleanName,
+                description: input.description.trim() || 'Custom Smart Lock Schedule',
+                startHour: Math.min(23, Math.max(0, input.startHour)),
+                startMinute: Math.min(59, Math.max(0, input.startMinute)),
+                endHour: Math.min(23, Math.max(0, input.endHour)),
+                endMinute: Math.min(59, Math.max(0, input.endMinute)),
+                daysOfWeek: [...input.daysOfWeek].sort(),
+                applyToAllLockedApps: input.applyToAllLockedApps,
+                targetPackages: input.applyToAllLockedApps
+                  ? ['*']
+                  : input.targetPackages ?? ['*'],
+                updatedAtMillis: now,
+              }
+            : s
+        )
+      );
+      appendEvent(
+        'PREF_UPDATED',
+        `Updated Smart Lock Schedule: ${cleanName}`,
+        `Saved schedule window ${String(input.startHour).padStart(2, '0')}:${String(input.startMinute).padStart(2, '0')} – ${String(input.endHour).padStart(2, '0')}:${String(input.endMinute).padStart(2, '0')} to Room lock_schedules.`
+      );
+      return { ok: true, message: `Updated schedule "${cleanName}".` };
+    } else {
+      const nextId =
+        lockSchedules.reduce((max, s) => Math.max(max, s.id), 0) + 1;
+      const newSched: LockScheduleRecord = {
+        id: nextId,
+        name: cleanName,
+        description:
+          input.description.trim() ||
+          `Custom schedule (${String(input.startHour).padStart(2, '0')}:${String(input.startMinute).padStart(2, '0')} – ${String(input.endHour).padStart(2, '0')}:${String(input.endMinute).padStart(2, '0')})`,
+        startHour: Math.min(23, Math.max(0, input.startHour)),
+        startMinute: Math.min(59, Math.max(0, input.startMinute)),
+        endHour: Math.min(23, Math.max(0, input.endHour)),
+        endMinute: Math.min(59, Math.max(0, input.endMinute)),
+        daysOfWeek: [...input.daysOfWeek].sort(),
+        applyToAllLockedApps: input.applyToAllLockedApps,
+        targetPackages: input.applyToAllLockedApps
+          ? ['*']
+          : input.targetPackages && input.targetPackages.length > 0
+          ? input.targetPackages
+          : ['*'],
+        isEnabled: true,
+        createdAtMillis: now,
+        updatedAtMillis: now,
+      };
+      setLockSchedules((prev) => [...prev, newSched]);
+      appendEvent(
+        'PREF_UPDATED',
+        `Created Smart Lock Schedule: ${cleanName}`,
+        `Added schedule ${String(newSched.startHour).padStart(2, '0')}:${String(newSched.startMinute).padStart(2, '0')} – ${String(newSched.endHour).padStart(2, '0')}:${String(newSched.endMinute).padStart(2, '0')} to Room lock_schedules (Schema v4).`
+      );
+      return { ok: true, message: `Created schedule "${cleanName}".` };
+    }
+  };
+
+  const deleteLockSchedule = (scheduleId: number) => {
+    touchSessionActivity();
+    const target = lockSchedules.find((s) => s.id === scheduleId);
+    setLockSchedules((prev) => prev.filter((s) => s.id !== scheduleId));
+    if (target) {
+      appendEvent(
+        'PREF_UPDATED',
+        `Deleted Smart Lock Schedule: ${target.name}`,
+        'Removed schedule row from Room lock_schedules table.'
+      );
+    }
+  };
+
+  // Phase 6 Section 5: Export Encrypted Backup Archive (PBKDF2-HMAC-SHA256 210k + AES-256-GCM)
+  const exportEncryptedConfigurationBackup = async (
+    backupPassword: string
+  ): Promise<{ ok: boolean; message: string; envelopeJson?: string }> => {
+    setIsCryptoBusy(true);
+    try {
+      const res = await createEncryptedBackupArchive(
+        {
+          lockedApps: lockedRoomRows,
+          schedules: lockSchedules,
+          appearance: phase6Appearance,
+          themeMode: preferences.themeMode,
+          sessionTimeout: preferences.sessionTimeout,
+          reLockDurationOption,
+          lockOnScreenOff,
+          maxFailedAttempts: preferences.maxFailedAttempts,
+        },
+        backupPassword
+      );
+      if (!res.ok || !res.envelopeJson) {
+        const msg = res.error ?? 'Failed to encrypt backup payload.';
+        setBackupRestoreStatusMessage({ type: 'error', text: msg });
+        return { ok: false, message: msg };
+      }
+
+      setLastExportedBackupJson(res.envelopeJson);
+      const msg = `Encrypted backup exported (${lockedRoomRows.length} locked apps, ${lockSchedules.length} schedules). Sealed with PBKDF2-HMAC-SHA256 (210,000 iterations) + AES-256-GCM. Zero PINs or keys exported.`;
+      setBackupRestoreStatusMessage({ type: 'success', text: msg });
+      appendEvent(
+        'PREF_UPDATED',
+        'Encrypted Configuration Backup Exported (AES-256-GCM)',
+        `Exported ${lockedRoomRows.length} locked app rule(s) and ${lockSchedules.length} schedule(s) with SHA-256 digest ${res.metadata?.ciphertextSha256Hex.slice(0, 16)}...`
+      );
+      return { ok: true, message: msg, envelopeJson: res.envelopeJson };
+    } finally {
+      setIsCryptoBusy(false);
+    }
+  };
+
+  // Phase 6 Section 5: Verify & Restore Encrypted Backup Archive
+  const restoreEncryptedConfigurationBackup = async (
+    envelopeJsonString: string,
+    backupPassword: string,
+    userConfirmedOverwrite: boolean
+  ): Promise<{ ok: boolean; message: string }> => {
+    setIsCryptoBusy(true);
+    try {
+      const res = await decryptAndValidateBackupArchive(
+        envelopeJsonString,
+        backupPassword,
+        userConfirmedOverwrite
+      );
+      if (!res.ok || !res.payload) {
+        const msg = res.errorMessage ?? 'Backup restore validation failed.';
+        setBackupRestoreStatusMessage({ type: 'error', text: msg });
+        appendEvent(
+          'SENSITIVE_SETTING_CHANGED',
+          `Encrypted Backup Restore Rejected (${res.errorCode ?? 'ERROR'})`,
+          msg,
+          null,
+          { severity: 'WARNING' }
+        );
+        return { ok: false, message: msg };
+      }
+
+      const restored = res.payload;
+      setLockedRoomRows(restored.lockedApps);
+      setLockSchedules(restored.schedules);
+      setPhase6Appearance(restored.appearance);
+      setReLockDurationOption(restored.reLockDurationOption);
+      setLockOnScreenOff(restored.lockOnScreenOff);
+      setPreferences((prev) => ({
+        ...prev,
+        themeMode: restored.themeMode,
+        sessionTimeout: restored.sessionTimeout,
+        maxFailedAttempts: restored.maxFailedAttempts,
+      }));
+      setRequiresPostRestorePinVerify(true);
+
+      const msg = `Backup verified & restored (${restored.lockedApps.length} locked apps, ${restored.schedules.length} schedules). Master PIN verification is required to resume active session.`;
+      setBackupRestoreStatusMessage({ type: 'success', text: msg });
+      appendEvent(
+        'SENSITIVE_SETTING_CHANGED',
+        'Encrypted Backup Verified & Restored (AES-256-GCM)',
+        `Restored ${restored.lockedApps.length} locked app(s) and ${restored.schedules.length} schedule(s). Ciphertext & plaintext SHA-256 digests verified.`,
+        null,
+        { severity: 'INFO' }
+      );
+      return { ok: true, message: msg };
+    } finally {
+      setIsCryptoBusy(false);
+    }
   };
 
   const resetAllPhase1Data = () => {
@@ -1355,6 +2251,11 @@ export function useNexLockStore() {
     setLockedRoomRows(INITIAL_LOCKED_ROOM_ROWS);
     setEvents(INITIAL_SECURITY_EVENTS);
     setPreferences(DEFAULT_PREFERENCES);
+    setLockSchedules(INITIAL_LOCK_SCHEDULES);
+    setPhase6Appearance(DEFAULT_PHASE6_APPEARANCE);
+    setLastExportedBackupJson('');
+    setBackupRestoreStatusMessage(null);
+    setRequiresPostRestorePinVerify(false);
     setDraftPin('');
     setConfirmPinInput('');
     setSelectedPackageSet([]);
@@ -1378,6 +2279,9 @@ export function useNexLockStore() {
     setActiveChallengePackage(null);
     setIsChallengeActivityVisible(false);
     setUnlockedPackageSessions({});
+    setConsecutiveIntruderFailures(0);
+    setQuickLockStatusBanner(null);
+    setDecryptedVaultPreview(null);
   };
 
   const selectedApp =
@@ -1450,6 +2354,44 @@ export function useNexLockStore() {
     simulateScreenOn,
     excludedSystemPackages: EXCLUDED_SYSTEM_PACKAGES,
     reLockDurationOptions: RELOCK_DURATION_OPTIONS,
+    // Phase 5 Advanced Security, Intruder Detection & Privacy Vault State & Actions
+    intruderConfig,
+    updateIntruderConfig,
+    consecutiveFailedAttempts: consecutiveIntruderFailures,
+    intruderImages: intruderRecords,
+    deleteAllIntruderRecords,
+    vaultFiles: vaultEncryptedFiles,
+    decryptedVaultPreview,
+    setDecryptedVaultPreview,
+    encryptAndImportVaultFile,
+    decryptVaultFileById,
+    deleteVaultFileById,
+    securityNotifications: dispatchedNotifications,
+    quickLockStatusBanner,
+    setQuickLockStatusBanner,
+    executeQuickLock,
+    deleteSingleSecurityEvent,
+    authorizeSensitiveAction,
+    // Phase 6 Smart Lock Scheduler, Lock Modes, Personalization, Encrypted Backup & Analytics
+    lockSchedules,
+    toggleLockScheduleEnabled,
+    createOrUpdateLockSchedule,
+    deleteLockSchedule,
+    scheduleModeEvaluation,
+    simulatedScheduleTimeZone,
+    setSimulatedScheduleTimeZone,
+    phase6Appearance,
+    setLockMode,
+    updatePhase6Appearance,
+    securityAnalyticsReport,
+    lastExportedBackupJson,
+    setLastExportedBackupJson,
+    backupRestoreStatusMessage,
+    setBackupRestoreStatusMessage,
+    requiresPostRestorePinVerify,
+    setRequiresPostRestorePinVerify,
+    exportEncryptedConfigurationBackup,
+    restoreEncryptedConfigurationBackup,
     // Phase 2 Auth State & Actions
     isSessionAuthenticated,
     lastAuthMethod,

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NEXLOCK</string>
+    <string name="app_tagline">Your Apps. Your Privacy. Your Control.</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_apps">Apps</string>
+    <string name="nav_schedules">Schedules</string>
+    <string name="nav_vault">Vault</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Protection Status & Lock Modes -->
+    <string name="protection_active">Protection Active</string>
+    <string name="protection_degraded">Setup Required</string>
+    <string name="lock_mode_normal">Normal Protection</string>
+    <string name="lock_mode_max_security">Maximum Security</string>
+    <string name="lock_mode_night">Night Mode</string>
+    <string name="lock_mode_custom">Custom Schedule Rules</string>
+
+    <!-- Smart Lock Scheduler -->
+    <string name="schedules_title">Smart Lock Scheduler</string>
+    <string name="schedules_subtitle">Automate app protection across work hours, overnight windows, and weekends.</string>
+    <string name="schedule_overnight_badge">Overnight (Crosses Midnight)</string>
+    <string name="schedule_add_new">Create Schedule</string>
+
+    <!-- Encrypted Backup & Restore -->
+    <string name="backup_title">Encrypted Backup &amp; Restore</string>
+    <string name="backup_subtitle">Export locked app rules and schedules with PBKDF2-HMAC-SHA256 &amp; AES-256-GCM encryption.</string>
+    <string name="backup_security_notice">Master PINs, cryptographic keys, and biometric data are never exported.</string>
+    <string name="backup_export_btn">Export Encrypted Backup</string>
+    <string name="backup_restore_btn">Verify &amp; Restore Backup</string>
+
+    <!-- Security Analytics -->
+    <string name="analytics_title">Security Analytics</string>
+    <string name="analytics_7d">Last 7 Days</string>
+    <string name="analytics_30d">Last 30 Days</string>
+
+    <!-- Help & Support -->
+    <string name="help_center_title">Help Center &amp; Troubleshooting</string>
+    <string name="privacy_policy_title">Privacy Architecture &amp; Policy</string>
+</resources>

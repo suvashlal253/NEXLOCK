@@ -40,6 +40,20 @@
     <!-- Boot Recovery for Persistent Monitoring (Phase 4 Active) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!--
+      Optional Intruder Selfie Camera Permission (Phase 5 Active):
+      Requested at runtime ONLY after explicit user consent in Intruder Detection settings.
+      Front camera hardware is marked android:required="false" so devices without a front camera
+      are fully supported and gracefully fall back to event-only intruder logging.
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
+
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
@@ -88,6 +102,19 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Phase 6 Smart Schedule Time & TimeZone Change Receiver -->
+        <receiver
+            android:name=".schedule.ScheduleTimeChangeReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
+                <action android:name="com.nexlock.security.action.EVALUATE_LOCK_SCHEDULES" />
             </intent-filter>
         </receiver>
     </application>

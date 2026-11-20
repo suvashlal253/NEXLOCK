@@ -7,6 +7,207 @@ export interface KotlinSourceFile {
 
 export const KOTLIN_SOURCE_FILES: KotlinSourceFile[] = [
   {
+    path: 'android/app/src/main/java/com/nexlock/security/schedule/LockScheduleManager.kt',
+    moduleGroup: 'Phase 6 · Smart Lock Scheduler & Lock Modes',
+    description:
+      'Evaluates intraday (09:00–17:00) and cross-midnight (22:00–07:00) schedules with previous-day carryover, handles time-zone and clock shifts, synchronizes effective packages with AppLockEngine across 4 Lock Modes, and schedules inexact AlarmManager window transitions without requiring SCHEDULE_EXACT_ALARM.',
+    code: `class LockScheduleManager(
+    private val scheduleRepository: LockScheduleRepository,
+    private val appLockEngine: AppLockEngine? = null,
+    private val zoneIdProvider: () -> ZoneId = { ZoneId.systemDefault() }
+) {
+    fun isScheduleActiveAt(schedule: LockScheduleEntity, dateTime: ZonedDateTime): Boolean {
+        if (!schedule.isEnabled) return false
+        val currentMinute = dateTime.hour * 60 + dateTime.minute
+        return if (!schedule.isOvernightSchedule) {
+            currentDay in activeDays && currentMinute in schedule.startMinuteOfDay until schedule.endMinuteOfDay
+        } else {
+            // Cross-midnight evaluation checks both tonight's window and yesterday's carryover window
+            val startedTonight = currentDay in activeDays && currentMinute >= schedule.startMinuteOfDay
+            val carriedFromYesterday = previousDay in activeDays && currentMinute < schedule.endMinuteOfDay
+            startedTonight || carriedFromYesterday
+        }
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/backup/EncryptedBackupManager.kt',
+    moduleGroup: 'Phase 6 · PBKDF2 + AES-256-GCM Encrypted Backup & Restore',
+    description:
+      'Password-protected configuration backup and restore via Storage Access Framework (Uri). Uses PBKDF2WithHmacSHA256 (210,000 iterations + 128-bit salt) and AES/GCM/NoPadding (96-bit IV + 128-bit AEAD tag) with SHA-256 integrity checks. Strictly excludes PINs, verifiers, Keystore keys, and biometric data.',
+    code: `class BackupEncryptionManager(
+    private val secureRandom: SecureRandom = SecureRandom()
+) {
+    fun encryptPayload(payload: BackupConfigurationPayload, passphrase: CharArray): EncryptedBackupContainer {
+        val salt = ByteArray(16).also { secureRandom.nextBytes(it) }
+        val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
+        val secretKey = deriveAesKey(passphrase, salt, 210_000)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        val ciphertextWithTag = cipher.doFinal(plaintextBytes)
+        // Verifies SHA-256 digests and rejects any payload containing forbidden authentication fields...
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/analytics/SecurityAnalyticsRepository.kt',
+    moduleGroup: 'Phase 6 · Real 7-Day & 30-Day Security Analytics',
+    description:
+      'Computes real 7-day and 30-day security metrics directly from Room (security_events, locked_apps, intruder_images, lock_schedules) including daily trend series, most frequently targeted app, and recent unlock timestamps.',
+    code: `class SecurityAnalyticsRepository(
+    private val securityEventDao: SecurityEventDao,
+    private val lockedAppsDao: LockedAppsDao,
+    private val intruderImageDao: IntruderImageDao,
+    private val lockScheduleDao: LockScheduleDao
+) {
+    fun observeAnalyticsSnapshot(): Flow<SecurityAnalyticsSnapshot> = combine(
+        securityEventDao.observeRecentEvents(500),
+        lockedAppsDao.observeAllLockedApps(),
+        intruderImageDao.observeAllIntruderImages(),
+        lockScheduleDao.observeAllSchedules()
+    ) { events, lockedApps, intruderImages, schedules ->
+        computeSnapshot(events, lockedApps, intruderImages, schedules, clockMillis())
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/test/java/com/nexlock/security/phase6/Phase6ProductionReadinessTest.kt',
+    moduleGroup: 'Phase 6 · JUnit 4 Production Readiness Suite (14 Tests)',
+    description:
+      '14 JUnit 4 tests verifying schedule creation, cross-midnight evaluation, time-zone changes, Lock Modes, theme/personalization persistence, AES-256-GCM backup/restore round-trip, wrong password rejection, tampered backup rejection, real analytics, app sorting, uninstalled app recovery, and Room v3->v4 migration.',
+    code: `class Phase6ProductionReadinessTest {
+    @Test fun test2_crossMidnightScheduleEvaluatesEveningAndEarlyMorningCarryoverCorrectly() { ... }
+    @Test fun test7_encryptedBackupAndRestoreRoundTripRestoresConfigurationAndExcludesSecrets() { ... }
+    @Test fun test8_wrongBackupPasswordFailsCleanlyWithAuthenticationException() { ... }
+    @Test fun test9_corruptedOrTamperedBackupFileIsRejectedSafely() { ... }
+    @Test fun test13_roomMigrationV3ToV4PreservesExistingTablesAndCreatesLockSchedules() { ... }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/intruder/IntruderDetectionManager.kt',
+    moduleGroup: 'Phase 5 · Intruder Detection System',
+    description:
+      'Coordinates FailedAttemptRepository, configurable 3/5/10 failed-attempt thresholds, biometric cancellation exclusion (USER_CANCELED ignored), SecurityEventRepository logging, and optional consented IntruderSelfieManager capture.',
+    code: `class IntruderDetectionManager(
+    private val failedAttemptRepository: FailedAttemptRepository,
+    private val securityEventRepository: SecurityEventRepository,
+    private val intruderSelfieManager: IntruderSelfieManager? = null,
+    private val notificationManager: SecurityNotificationManager? = null
+) {
+    suspend fun recordFailedAuthentication(
+        targetPackageName: String,
+        authenticationMethod: String,
+        isUserCanceledBiometric: Boolean = false,
+        foregroundLifecycleOwner: LifecycleOwner? = null
+    ): FailedAttemptOutcome {
+        val outcome = failedAttemptRepository.recordFailedAttempt(
+            targetPackageName = targetPackageName,
+            authenticationMethod = authenticationMethod,
+            isUserCancellation = isUserCanceledBiometric
+        )
+        // Logs FAILED_PIN / FAILED_BIOMETRIC and triggers INTRUDER_THRESHOLD_REACHED...
+        return outcome
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/intruder/IntruderSelfieManager.kt',
+    moduleGroup: 'Phase 5 · Consented CameraX Intruder Selfie',
+    description:
+      'Captures a single front-camera image via CameraX (ProcessCameraProvider + ImageCapture) only when user consent, CAMERA permission, and a foreground LifecycleOwner are active; encrypts via AES-256-GCM into filesDir/intruder_encrypted/. Falls back cleanly to EVENT_ONLY when backgrounded.',
+    code: `class IntruderSelfieManager(
+    private val appContext: Context,
+    private val secureFileRepository: SecureFileRepository
+) {
+    suspend fun captureAndEncryptIntruderSelfie(
+        lifecycleOwner: LifecycleOwner?,
+        userConsented: Boolean,
+        targetPackageName: String,
+        authenticationMethod: String,
+        failedAttemptCount: Int
+    ): IntruderCaptureResult = withContext(Dispatchers.Main) {
+        if (!userConsented) return@withContext eventOnly(IntruderCaptureFailureReason.USER_CONSENT_NOT_GRANTED)
+        if (!isCameraPermissionGranted()) return@withContext eventOnly(IntruderCaptureFailureReason.CAMERA_PERMISSION_DENIED)
+        if (lifecycleOwner == null || !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            // Modern Android restricts background camera activation; fail gracefully
+            return@withContext eventOnly(IntruderCaptureFailureReason.BACKGROUND_CAMERA_RESTRICTED_BY_OS)
+        }
+        // Binds CameraSelector.DEFAULT_FRONT_CAMERA, captures JPEG, encrypts with AES-256-GCM, and zeroes plaintext...
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/vault/SecureFileRepository.kt',
+    moduleGroup: 'Phase 5 · Privacy Vault AES-256-GCM Engine',
+    description:
+      'AndroidKeyStore-backed AES-256-GCM (96-bit IV + 128-bit authentication tag) file encryption and decryption for Private Vault items and encrypted intruder selfies, with SHA-256 integrity verification and in-place plaintext buffer zeroing.',
+    code: `class SecureFileRepository(
+    private val appContext: Context,
+    private val keyProvider: VaultSecretKeyProvider = AndroidKeystoreVaultKeyProvider()
+) {
+    suspend fun encryptAndImportToVault(
+        displayName: String,
+        mimeType: String,
+        plaintextBytes: ByteArray
+    ): VaultItemMetadataEntity = withContext(ioDispatcher) {
+        val secretKey = keyProvider.getOrCreateSecretKey(VAULT_KEYSTORE_ALIAS)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val ciphertextWithTag = cipher.doFinal(plaintextBytes)
+        wipeBuffer(plaintextBytes)
+        // Writes to filesDir/private_vault_encrypted/*.vault.enc and returns Room metadata...
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/notifications/SecurityNotificationManager.kt',
+    moduleGroup: 'Phase 5 · Redacted Security Notifications',
+    description:
+      'Configures Android NotificationChannels with NotificationCompat.VISIBILITY_PRIVATE lock-screen redaction, POST_NOTIFICATIONS runtime permission validation, non-critical alert muting, and 45s NotificationDeduplicator.',
+    code: `class SecurityNotificationManager(
+    private val appContext: Context,
+    private val deduplicator: NotificationDeduplicator = NotificationDeduplicator()
+) {
+    fun notifyIntruderThresholdReached(targetPackageName: String, consecutiveFailures: Int, authMethod: String): Boolean {
+        if (!canPostNotifications()) return false
+        if (!deduplicator.shouldDispatch("INTRUDER_THRESHOLD:$targetPackageName:$consecutiveFailures")) return false
+        // Builds NotificationCompat with VISIBILITY_PRIVATE and redacted publicVersion...
+        return true
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/main/java/com/nexlock/security/monitoring/ProtectionHealthMonitor.kt',
+    moduleGroup: 'Phase 5 · Tamper & Protection Health + Quick Lock',
+    description:
+      'Monitors Usage Access, Overlay permission, Monitoring Service, Keystore integrity, and uninstalled protected packages. Executes Quick Lock / Panic Lock and enforces Phase 2 SessionManager authorization for sensitive settings.',
+    code: `class ProtectionHealthMonitor(
+    private val appLockEngine: AppLockEngine,
+    private val sessionManager: SessionManager,
+    private val securityEventRepository: SecurityEventRepository
+) {
+    suspend fun executeQuickLock(lockNexlockMasterSessionToo: Boolean = true): QuickLockExecutionResult {
+        val activeBefore = appLockEngine.getActiveUnlockedSessions().size
+        appLockEngine.invalidateAllUnlockedSessions("QUICK_LOCK_TRIGGERED")
+        if (lockNexlockMasterSessionToo) sessionManager.lockImmediately()
+        val activeAfter = appLockEngine.getActiveUnlockedSessions().size
+        // Verifies activeAfter == 0 and logs QUICK_LOCK_TRIGGERED...
+    }
+}`,
+  },
+  {
+    path: 'android/app/src/test/java/com/nexlock/security/intruder/Phase5AdvancedSecurityTest.kt',
+    moduleGroup: 'Phase 5 · JUnit 4 Security & Vault Test Suite (12 Tests)',
+    description:
+      '12 JUnit 4 tests covering Intruder Detection, Thresholds (3/5/10), Reset on Success, Biometric Cancellation Exclusion, Consented CameraX Capture & Background Fallback, AES-256-GCM Vault Round-Trip, Quick Lock, and Sensitive Settings Session Gate.',
+    code: `class Phase5AdvancedSecurityTest {
+    @Test fun test1_failedPinAttemptIncrementsCounterAndLogsSecurityEvent() { ... }
+    @Test fun test4_biometricUserCancellationDoesNotCountAsIntruderAttempt() { ... }
+    @Test fun test6_vaultAes256GcmEncryptionDecryptionAndTamperRejection() { ... }
+    @Test fun test10_quickLockImmediatelyInvalidatesAllActiveSessions() { ... }
+}`,
+  },
+  {
     path: 'android/app/src/main/java/com/nexlock/security/monitoring/AppLockEngine.kt',
     moduleGroup: 'Phase 4 · App Lock Engine',
     description:

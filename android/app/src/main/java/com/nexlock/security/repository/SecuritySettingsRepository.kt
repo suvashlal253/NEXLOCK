@@ -8,6 +8,13 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.nexlock.security.auth.SessionTimeoutOption
+import com.nexlock.security.model.AccentColorPreset
+import com.nexlock.security.model.AppListDensity
+import com.nexlock.security.model.AppSortOrder
+import com.nexlock.security.model.KeypadStyle
+import com.nexlock.security.model.LockMode
+import com.nexlock.security.model.LockScreenBackgroundStyle
+import com.nexlock.security.model.ThemePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -25,7 +32,19 @@ data class StoredSecuritySettings(
     val maxFailedAttempts: Int = 5,
     val lockoutUntilEpochMillis: Long = 0L,
     val biometricEnabled: Boolean = false,
-    val sessionTimeoutOption: SessionTimeoutOption = SessionTimeoutOption.MINUTE_1
+    val sessionTimeoutOption: SessionTimeoutOption = SessionTimeoutOption.MINUTE_1,
+    // Phase 6 Lock Mode & Personalization Preferences
+    val lockMode: LockMode = LockMode.NORMAL,
+    val themePreference: ThemePreference = ThemePreference.DARK,
+    val accentColorPreset: AccentColorPreset = AccentColorPreset.NEXLOCK_BLUE,
+    val appListDensity: AppListDensity = AppListDensity.COMFORTABLE,
+    val appSortOrder: AppSortOrder = AppSortOrder.NAME_ASC,
+    val showAppIconOnLockScreen: Boolean = true,
+    val showAppNameOnLockScreen: Boolean = true,
+    val lockScreenBackgroundStyle: LockScreenBackgroundStyle = LockScreenBackgroundStyle.OBSIDIAN_GRADIENT,
+    val enableLockScreenAnimations: Boolean = true,
+    val keypadStyle: KeypadStyle = KeypadStyle.ROUNDED_MODERN,
+    val languageCode: String = "en"
 )
 
 interface SecuritySettingsStore {
@@ -43,6 +62,20 @@ interface SecuritySettingsStore {
     suspend fun setMaxFailedAttempts(maxAttempts: Int)
     suspend fun setBiometricEnabled(enabled: Boolean)
     suspend fun setSessionTimeout(option: SessionTimeoutOption)
+    // Phase 6 setters
+    suspend fun setLockMode(mode: LockMode)
+    suspend fun setThemePreference(theme: ThemePreference)
+    suspend fun setAccentColorPreset(accent: AccentColorPreset)
+    suspend fun setAppListDensity(density: AppListDensity)
+    suspend fun setAppSortOrder(sortOrder: AppSortOrder)
+    suspend fun setLockScreenPersonalization(
+        showAppIcon: Boolean,
+        showAppName: Boolean,
+        backgroundStyle: LockScreenBackgroundStyle,
+        enableAnimations: Boolean,
+        keypadStyle: KeypadStyle
+    )
+    suspend fun setLanguageCode(languageCode: String)
 }
 
 class SecuritySettingsRepository(
@@ -61,6 +94,18 @@ class SecuritySettingsRepository(
         private val KEY_LOCKOUT_UNTIL_EPOCH = longPreferencesKey("lockout_until_epoch")
         private val KEY_BIOMETRIC_ENABLED = booleanPreferencesKey("biometric_enabled")
         private val KEY_SESSION_TIMEOUT = stringPreferencesKey("session_timeout_option")
+        // Phase 6 keys
+        private val KEY_LOCK_MODE = stringPreferencesKey("phase6_lock_mode")
+        private val KEY_THEME_PREFERENCE = stringPreferencesKey("phase6_theme_pref")
+        private val KEY_ACCENT_COLOR_PRESET = stringPreferencesKey("phase6_accent_preset")
+        private val KEY_APP_LIST_DENSITY = stringPreferencesKey("phase6_app_list_density")
+        private val KEY_APP_SORT_ORDER = stringPreferencesKey("phase6_app_sort_order")
+        private val KEY_LOCK_SHOW_APP_ICON = booleanPreferencesKey("phase6_lock_show_app_icon")
+        private val KEY_LOCK_SHOW_APP_NAME = booleanPreferencesKey("phase6_lock_show_app_name")
+        private val KEY_LOCK_BG_STYLE = stringPreferencesKey("phase6_lock_bg_style")
+        private val KEY_LOCK_ANIMATIONS = booleanPreferencesKey("phase6_lock_animations")
+        private val KEY_LOCK_KEYPAD_STYLE = stringPreferencesKey("phase6_lock_keypad_style")
+        private val KEY_LANGUAGE_CODE = stringPreferencesKey("phase6_language_code")
     }
 
     override val settingsFlow: Flow<StoredSecuritySettings> = context.securityDataStore.data.map { prefs ->
@@ -75,7 +120,18 @@ class SecuritySettingsRepository(
             maxFailedAttempts = prefs[KEY_MAX_FAILED_ATTEMPTS] ?: 5,
             lockoutUntilEpochMillis = prefs[KEY_LOCKOUT_UNTIL_EPOCH] ?: 0L,
             biometricEnabled = prefs[KEY_BIOMETRIC_ENABLED] ?: false,
-            sessionTimeoutOption = SessionTimeoutOption.fromId(prefs[KEY_SESSION_TIMEOUT])
+            sessionTimeoutOption = SessionTimeoutOption.fromId(prefs[KEY_SESSION_TIMEOUT]),
+            lockMode = LockMode.fromId(prefs[KEY_LOCK_MODE]),
+            themePreference = ThemePreference.fromId(prefs[KEY_THEME_PREFERENCE]),
+            accentColorPreset = AccentColorPreset.fromId(prefs[KEY_ACCENT_COLOR_PRESET]),
+            appListDensity = AppListDensity.fromId(prefs[KEY_APP_LIST_DENSITY]),
+            appSortOrder = AppSortOrder.fromId(prefs[KEY_APP_SORT_ORDER]),
+            showAppIconOnLockScreen = prefs[KEY_LOCK_SHOW_APP_ICON] ?: true,
+            showAppNameOnLockScreen = prefs[KEY_LOCK_SHOW_APP_NAME] ?: true,
+            lockScreenBackgroundStyle = LockScreenBackgroundStyle.fromId(prefs[KEY_LOCK_BG_STYLE]),
+            enableLockScreenAnimations = prefs[KEY_LOCK_ANIMATIONS] ?: true,
+            keypadStyle = KeypadStyle.fromId(prefs[KEY_LOCK_KEYPAD_STYLE]),
+            languageCode = prefs[KEY_LANGUAGE_CODE] ?: "en"
         )
     }
 
@@ -131,4 +187,57 @@ class SecuritySettingsRepository(
             prefs[KEY_SESSION_TIMEOUT] = option.id
         }
     }
+
+    override suspend fun setLockMode(mode: LockMode) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_LOCK_MODE] = mode.id
+        }
+    }
+
+    override suspend fun setThemePreference(theme: ThemePreference) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_THEME_PREFERENCE] = theme.id
+        }
+    }
+
+    override suspend fun setAccentColorPreset(accent: AccentColorPreset) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_ACCENT_COLOR_PRESET] = accent.id
+        }
+    }
+
+    override suspend fun setAppListDensity(density: AppListDensity) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_APP_LIST_DENSITY] = density.id
+        }
+    }
+
+    override suspend fun setAppSortOrder(sortOrder: AppSortOrder) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_APP_SORT_ORDER] = sortOrder.id
+        }
+    }
+
+    override suspend fun setLockScreenPersonalization(
+        showAppIcon: Boolean,
+        showAppName: Boolean,
+        backgroundStyle: LockScreenBackgroundStyle,
+        enableAnimations: Boolean,
+        keypadStyle: KeypadStyle
+    ) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_LOCK_SHOW_APP_ICON] = showAppIcon
+            prefs[KEY_LOCK_SHOW_APP_NAME] = showAppName
+            prefs[KEY_LOCK_BG_STYLE] = backgroundStyle.id
+            prefs[KEY_LOCK_ANIMATIONS] = enableAnimations
+            prefs[KEY_LOCK_KEYPAD_STYLE] = keypadStyle.id
+        }
+    }
+
+    override suspend fun setLanguageCode(languageCode: String) {
+        context.securityDataStore.edit { prefs ->
+            prefs[KEY_LANGUAGE_CODE] = if (languageCode == "bn") "bn" else "en"
+        }
+    }
 }
+
